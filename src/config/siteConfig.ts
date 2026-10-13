@@ -1,0 +1,15 @@
+export const siteConfig = {
+  displayName: 'Hafid Yunna Manan Baraka',
+  professionalTitle: 'Video Editor & Content Creator',
+  tagline: 'Saya membuat video pendek untuk kebutuhan konten brand, mulai dari mencari ide sampai proses editing.',
+  introduction: 'Saya mahasiswa Sistem Informasi semester 7 di UPN Veteran Yogyakarta sekaligus content creator. Saya terbiasa mengerjakan konten TikTok, Reels, dan Shorts untuk berbagai lini bisnis, baik secara mandiri maupun bersama tim. Saya suka menggabungkan cara berpikir analitis dengan kreativitas visual, lalu menyesuaikan eksekusi konten dengan kebutuhan tiap brand.',
+  location: 'Klaten, Jawa Tengah',
+  phone: '+62 851 1124 5550',
+  email: '2semogaberkah2@gmail.com',
+  whatsappUrl: 'https://wa.me/6285111245550',
+  tiktokUrl: '',
+  instagramUrl: '',
+  linkedInUrl: '',
+  siteUrl: '',
+  availabilityStatus: '',
+};
