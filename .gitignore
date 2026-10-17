@@ -3,3 +3,23 @@ dist/
 .env
 .env.*
 !.env.example
+
+# Local backups and debugging artifacts
+*.backup
+*.bak
+*.before-*
+*.debug-*
+vite.config.ts.backup*
+backup-*/
+debug-*.py
+fix-*.py
+patch-*.py
+FFMPEG-FIX-NOTES.md
+
+# Additional local backup variants
+*.backup-*
+*.before-*
+*.before-*
+*.debug-*
+
+onal-video-portfolio
