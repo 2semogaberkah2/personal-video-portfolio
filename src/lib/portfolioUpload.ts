@@ -1,4 +1,5 @@
-﻿import { supabase } from './supabase';
+import { supabase } from './supabase';
+import { decodeExternalVideo } from './externalVideo';
 
 export type NewPortfolioVideo = {
   title: string;
@@ -8,6 +9,7 @@ export type NewPortfolioVideo = {
   role: string;
   published: boolean;
   aspectRatio: '9:16' | '16:9' | '1:1';
+  displayOrder: number;
 };
 
 const BUCKET = 'portfolio-videos';
@@ -122,6 +124,7 @@ export async function uploadPortfolioVideo(
         thumbnail_path: thumbnailPath,
         published: details.published,
         aspect_ratio: details.aspectRatio,
+        display_order: details.displayOrder,
       });
 
     if (insertError) {
@@ -151,6 +154,7 @@ export async function deletePortfolioVideo(
   const paths = [filePath, previewPath, thumbnailPath].filter(
     (path): path is string => Boolean(path)
   );
+  const isExternal = Boolean(decodeExternalVideo(filePath));
 
   const { error: databaseError } = await supabase
     .from('portfolio_videos')
@@ -160,6 +164,8 @@ export async function deletePortfolioVideo(
   if (databaseError) {
     throw new Error(`Data video gagal dihapus: ${databaseError.message}`);
   }
+
+  if (isExternal) return;
 
   const { error: storageError } = await supabase.storage
     .from(BUCKET)

@@ -192,3 +192,7 @@
     animation: none;
   }
 }
+
+/* External YouTube projects: load the player only after the visitor opens a card. */
+.video-play-overlay{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:58px;height:58px;border-radius:50%;display:grid;place-items:center;background:rgba(0,0,0,.72);border:1px solid rgba(255,255,255,.65);color:#fff;box-shadow:0 4px 24px rgba(0,0,0,.35);pointer-events:none}
+.video-card-fallback:hover .video-play-overlay{background:var(--pink);border-color:var(--pink)}

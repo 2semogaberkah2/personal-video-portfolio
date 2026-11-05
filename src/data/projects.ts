@@ -9,6 +9,8 @@ export type VideoProject = {
   externalUrl?: string;
   tiktokUrl?: string;
   tiktokVideoId?: string;
+  youtubeVideoId?: string;
+  videoSource?: 'upload' | 'tiktok' | 'youtube';
   description?: string;
   role?: string;
   featured?: boolean;
