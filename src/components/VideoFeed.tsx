@@ -1,4 +1,4 @@
-﻿
+
 import { useCallback, useEffect, useState } from 'react';
 import { Play } from 'lucide-react';
 import { projects as bundledProjects, type VideoProject } from '../data/projects';
@@ -165,7 +165,7 @@ export default function VideoFeed() {
         </div>
       )}
 
-      <VideoModal project={selected} onClose={closeModal} />
+      <VideoModal project={selected} projects={visibleProjects} onClose={closeModal} />
     </section>
   );
 }

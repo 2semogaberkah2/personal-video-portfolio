@@ -28,7 +28,6 @@ export default function VideoItem({
   const [showSlowHint, setShowSlowHint] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
-  const frameRef = useRef<HTMLDivElement>(null);
   const activePreviewRef = useRef(activePreview);
 
   const ratio =
@@ -64,24 +63,6 @@ export default function VideoItem({
     return () => query.removeEventListener('change', updateDevice);
   }, []);
 
-  useEffect(() => {
-    const frame = frameRef.current;
-    if (!frame || !touchDevice || !canPreviewMp4) return;
-
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (entry.isIntersecting && entry.intersectionRatio >= 0.65) {
-          onPreview(project.id);
-        } else if (activePreviewRef.current === project.id) {
-          onPreview(null);
-        }
-      },
-      { threshold: [0, 0.4, 0.65, 0.85, 1] }
-    );
-
-    observer.observe(frame);
-    return () => observer.disconnect();
-  }, [touchDevice, canPreviewMp4, project.id, onPreview]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -165,25 +146,14 @@ export default function VideoItem({
       }}
     >
       <div
-        ref={frameRef}
         className="video-frame"
         style={{ aspectRatio: ratio }}
       >
-        {isYouTube ? (
-          <button type="button" className="video-card-fallback" onClick={() => onOpen(project)} aria-label={`Putar video YouTube ${project.title}`} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 0, padding: 0, background: '#080808', cursor: 'pointer' }}>
+        {isYouTube || tiktokEmbed ? (
+          <button type="button" className="video-card-fallback" onClick={() => onOpen(project)} aria-label={`Buka video ${project.title}`} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 0, padding: 0, background: '#080808', cursor: 'pointer' }}>
             {project.thumbnail && <img src={project.thumbnail} alt="" loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
             <span className="video-play-overlay" aria-hidden="true"><Play size={25} fill="currentColor" /></span>
           </button>
-        ) : tiktokEmbed ? (
-          <iframe
-            className="video-tiktok-embed"
-            title={`Video TikTok: ${project.title}`}
-            src={tiktokEmbed}
-            allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
-            allowFullScreen
-            loading="lazy"
-            referrerPolicy="strict-origin-when-cross-origin"
-          />
         ) : canPreviewMp4 ? (
           <div
             className="video-card-fallback"
