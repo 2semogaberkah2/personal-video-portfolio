@@ -21,6 +21,7 @@ export default function VideoItem({
   activePreview,
 }: Props) {
   const [imageFailed, setImageFailed] = useState(false);
+  const [fallbackThumbUrl, setFallbackThumbUrl] = useState('');
   const [videoFailed, setVideoFailed] = useState(false);
   const [touchDevice, setTouchDevice] = useState(false);
   const [isMobileViewport, setIsMobileViewport] = useState(false);
@@ -71,6 +72,27 @@ export default function VideoItem({
       mobileQuery.removeEventListener('change', updateDevice);
     };
   }, []);
+
+  // Fallback client-side oEmbed jika /api/tiktok-thumb belum tersedia
+  useEffect(() => {
+    if (!imageFailed || !project.tiktokVideoId || fallbackThumbUrl) return;
+    let alive = true;
+    const target =
+      project.externalUrl ||
+      `https://www.tiktok.com/@tiktok/video/${project.tiktokVideoId}`;
+    fetch(`https://www.tiktok.com/oembed?url=${encodeURIComponent(target)}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { thumbnail_url?: string } | null) => {
+        if (alive && data?.thumbnail_url) {
+          setFallbackThumbUrl(data.thumbnail_url);
+          setImageFailed(false);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [imageFailed, project.tiktokVideoId, project.externalUrl, fallbackThumbUrl]);
 
   useEffect(() => {
     const frame = frameRef.current;
@@ -145,6 +167,8 @@ export default function VideoItem({
     }
   };
 
+  const displayThumbnail = fallbackThumbUrl || project.thumbnail;
+
   return (
     <article
       className="video-item-card"
@@ -183,12 +207,12 @@ export default function VideoItem({
             onClick={() => onOpen(project)}
             aria-label={`Buka video ${project.title}`}
           >
-            {!imageFailed && project.thumbnail ? (
+            {!imageFailed && displayThumbnail ? (
               <img
                 className="video-poster"
-                src={project.thumbnail}
+                src={displayThumbnail}
                 alt={`Thumbnail ${project.title}`}
-                loading="lazy"
+                referrerPolicy="no-referrer"
                 onError={() => setImageFailed(true)}
                 style={{
                   objectPosition: project.posterPosition ?? 'center',
@@ -201,6 +225,13 @@ export default function VideoItem({
                 muted
                 playsInline
                 preload="metadata"
+                onLoadedData={(e) => {
+                  try {
+                    e.currentTarget.currentTime = 0.1;
+                  } catch {
+                    // ignore seek error
+                  }
+                }}
                 onError={() => setVideoFailed(true)}
                 style={{
                   width: '100%',
@@ -210,15 +241,15 @@ export default function VideoItem({
                 }}
               />
             ) : tiktokEmbed ? (
-              <iframe
-                className="video-tiktok-embed"
-                title={`Video TikTok: ${project.title}`}
-                src={tiktokEmbed}
-                loading="lazy"
-                referrerPolicy="strict-origin-when-cross-origin"
-                tabIndex={-1}
-                style={{ pointerEvents: 'none' }}
-              />
+              <div className="mobile-tiktok-scaled-wrap" aria-hidden="true">
+                <iframe
+                  className="mobile-tiktok-scaled-iframe"
+                  title={`Video TikTok: ${project.title}`}
+                  src={tiktokEmbed}
+                  referrerPolicy="strict-origin-when-cross-origin"
+                  tabIndex={-1}
+                />
+              </div>
             ) : (
               <div className="asset-placeholder">
                 <span className="placeholder-icon">
@@ -228,7 +259,7 @@ export default function VideoItem({
               </div>
             )}
             <span className="video-play-overlay" aria-hidden="true">
-              <Play size={18} fill="currentColor" />
+              <Play size={16} fill="currentColor" />
             </span>
           </button>
         ) : isYouTube ? (
@@ -348,19 +379,20 @@ export default function VideoItem({
             onClick={() => onOpen(project)}
             aria-label={`Buka video ${project.title}`}
           >
-            {!imageFailed && project.thumbnail && (
+            {!imageFailed && displayThumbnail && (
               <img
                 className="video-poster"
-                src={project.thumbnail}
+                src={displayThumbnail}
                 alt={`Thumbnail ${project.title}`}
                 loading="lazy"
+                referrerPolicy="no-referrer"
                 onError={() => setImageFailed(true)}
                 style={{
                   objectPosition: project.posterPosition ?? 'center',
                 }}
               />
             )}
-            {(imageFailed || !project.thumbnail) && (
+            {(imageFailed || !displayThumbnail) && (
               <div className="asset-placeholder">
                 <span className="placeholder-icon">
                   <Play size={18} />
@@ -373,7 +405,7 @@ export default function VideoItem({
               <ArrowUpRight size={18} />
             </span>
             <span className="video-index">OPEN VIDEO</span>
-          </button>
+          </div>
         )}
       </div>
 
