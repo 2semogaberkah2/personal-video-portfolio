@@ -23,11 +23,13 @@ export default function VideoItem({
   const [imageFailed, setImageFailed] = useState(false);
   const [videoFailed, setVideoFailed] = useState(false);
   const [touchDevice, setTouchDevice] = useState(false);
+  const [isMobileViewport, setIsMobileViewport] = useState(false);
   const [isMuted, setIsMuted] = useState(true);
   const [isBuffering, setIsBuffering] = useState(false);
   const [showSlowHint, setShowSlowHint] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
+  const frameRef = useRef<HTMLDivElement>(null);
   const activePreviewRef = useRef(activePreview);
 
   const ratio =
@@ -52,28 +54,52 @@ export default function VideoItem({
   }, [activePreview]);
 
   useEffect(() => {
-    const query = window.matchMedia(
-      '(hover: hover) and (pointer: fine)'
-    );
+    const hoverQuery = window.matchMedia('(hover: hover) and (pointer: fine)');
+    const mobileQuery = window.matchMedia('(max-width: 600px)');
 
-    const updateDevice = () => setTouchDevice(!query.matches);
+    const updateDevice = () => {
+      setTouchDevice(!hoverQuery.matches);
+      setIsMobileViewport(mobileQuery.matches);
+    };
     updateDevice();
-    query.addEventListener('change', updateDevice);
 
-    return () => query.removeEventListener('change', updateDevice);
+    hoverQuery.addEventListener('change', updateDevice);
+    mobileQuery.addEventListener('change', updateDevice);
+
+    return () => {
+      hoverQuery.removeEventListener('change', updateDevice);
+      mobileQuery.removeEventListener('change', updateDevice);
+    };
   }, []);
 
+  useEffect(() => {
+    const frame = frameRef.current;
+    if (!frame || !touchDevice || isMobileViewport || !canPreviewMp4) return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting && entry.intersectionRatio >= 0.65) {
+          onPreview(project.id);
+        } else if (activePreviewRef.current === project.id) {
+          onPreview(null);
+        }
+      },
+      { threshold: [0, 0.4, 0.65, 0.85, 1] }
+    );
+
+    observer.observe(frame);
+    return () => observer.disconnect();
+  }, [touchDevice, isMobileViewport, canPreviewMp4, project.id, onPreview]);
 
   useEffect(() => {
     const video = videoRef.current;
-    if (!video) return;
+    if (!video || isMobileViewport) return;
 
     if (isActive) {
       if (video.paused) {
         setIsBuffering(true);
         video.play().catch(() => {
           setIsBuffering(false);
-          // Browser may block autoplay until the user interacts.
         });
       }
     } else {
@@ -82,7 +108,7 @@ export default function VideoItem({
       setIsBuffering(false);
       setShowSlowHint(false);
     }
-  }, [isActive]);
+  }, [isActive, isMobileViewport]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -101,6 +127,7 @@ export default function VideoItem({
 
     return () => window.clearTimeout(timeout);
   }, [isActive, isBuffering]);
+
   const toggleMute = (event: React.MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
 
@@ -114,9 +141,7 @@ export default function VideoItem({
     if (!nextMuted && !isActive) {
       onPreview(project.id);
     } else if (!nextMuted && video.paused) {
-      video.play().catch(() => {
-        // Playback can be retried by the user.
-      });
+      video.play().catch(() => {});
     }
   };
 
@@ -124,19 +149,20 @@ export default function VideoItem({
     <article
       className="video-item-card"
       onMouseEnter={() => {
-        if (!touchDevice && canPreviewMp4) onPreview(project.id);
+        if (!touchDevice && !isMobileViewport && canPreviewMp4) onPreview(project.id);
       }}
       onMouseLeave={() => {
-        if (!touchDevice && canPreviewMp4 && isActive) {
+        if (!touchDevice && !isMobileViewport && canPreviewMp4 && isActive) {
           onPreview(null);
         }
       }}
       onFocus={() => {
-        if (!touchDevice && canPreviewMp4) onPreview(project.id);
+        if (!touchDevice && !isMobileViewport && canPreviewMp4) onPreview(project.id);
       }}
       onBlur={(event) => {
         if (
           !touchDevice &&
+          !isMobileViewport &&
           canPreviewMp4 &&
           isActive &&
           !event.currentTarget.contains(event.relatedTarget as Node | null)
@@ -146,14 +172,104 @@ export default function VideoItem({
       }}
     >
       <div
+        ref={frameRef}
         className="video-frame"
         style={{ aspectRatio: ratio }}
       >
-        {isYouTube || tiktokEmbed ? (
-          <button type="button" className="video-card-fallback" onClick={() => onOpen(project)} aria-label={`Buka video ${project.title}`} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 0, padding: 0, background: '#080808', cursor: 'pointer' }}>
-            {project.thumbnail && <img src={project.thumbnail} alt="" loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
-            <span className="video-play-overlay" aria-hidden="true"><Play size={25} fill="currentColor" /></span>
+        {isMobileViewport ? (
+          <button
+            type="button"
+            className="video-card-fallback mobile-grid-tile"
+            onClick={() => onOpen(project)}
+            aria-label={`Buka video ${project.title}`}
+          >
+            {!imageFailed && project.thumbnail ? (
+              <img
+                className="video-poster"
+                src={project.thumbnail}
+                alt={`Thumbnail ${project.title}`}
+                loading="lazy"
+                onError={() => setImageFailed(true)}
+                style={{
+                  objectPosition: project.posterPosition ?? 'center',
+                }}
+              />
+            ) : canPreviewMp4 && previewUrl ? (
+              <video
+                className="video-poster"
+                src={`${previewUrl}#t=0.1`}
+                muted
+                playsInline
+                preload="metadata"
+                onError={() => setVideoFailed(true)}
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'cover',
+                  pointerEvents: 'none',
+                }}
+              />
+            ) : tiktokEmbed ? (
+              <iframe
+                className="video-tiktok-embed"
+                title={`Video TikTok: ${project.title}`}
+                src={tiktokEmbed}
+                loading="lazy"
+                referrerPolicy="strict-origin-when-cross-origin"
+                tabIndex={-1}
+                style={{ pointerEvents: 'none' }}
+              />
+            ) : (
+              <div className="asset-placeholder">
+                <span className="placeholder-icon">
+                  <Play size={18} />
+                </span>
+                <span>{project.title}</span>
+              </div>
+            )}
+            <span className="video-play-overlay" aria-hidden="true">
+              <Play size={18} fill="currentColor" />
+            </span>
           </button>
+        ) : isYouTube ? (
+          <button
+            type="button"
+            className="video-card-fallback"
+            onClick={() => onOpen(project)}
+            aria-label={`Putar video YouTube ${project.title}`}
+            style={{
+              position: 'absolute',
+              inset: 0,
+              width: '100%',
+              height: '100%',
+              border: 0,
+              padding: 0,
+              background: '#080808',
+              cursor: 'pointer',
+            }}
+          >
+            {project.thumbnail && (
+              <img
+                src={project.thumbnail}
+                alt=""
+                loading="lazy"
+                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+              />
+            )}
+            <span className="video-play-overlay" aria-hidden="true">
+              <Play size={25} fill="currentColor" />
+            </span>
+          </button>
+        ) : tiktokEmbed ? (
+          <iframe
+            className="video-tiktok-embed"
+            title={`Video TikTok: ${project.title}`}
+            src={tiktokEmbed}
+            allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
+            allowFullScreen
+            loading="lazy"
+            referrerPolicy="strict-origin-when-cross-origin"
+          />
         ) : canPreviewMp4 ? (
           <div
             className="video-card-fallback"
@@ -175,7 +291,7 @@ export default function VideoItem({
               muted={isMuted}
               loop
               playsInline
-              preload={isActive ? "auto" : "none"}
+              preload={isActive ? 'auto' : 'none'}
               poster={project.thumbnail || undefined}
               onLoadStart={() => {
                 if (activePreviewRef.current === project.id) {
@@ -273,7 +389,3 @@ export default function VideoItem({
     </article>
   );
 }
-
-
-
-

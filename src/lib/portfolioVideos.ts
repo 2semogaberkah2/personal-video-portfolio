@@ -11,6 +11,23 @@ type PortfolioVideoRow = {
 const BUCKET = 'portfolio-videos';
 const SIGNED_URL_DURATION = 60 * 60;
 
+async function fetchTikTokThumbnail(videoUrl: string): Promise<string> {
+  try {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 3500);
+    const response = await fetch(
+      `https://www.tiktok.com/oembed?url=${encodeURIComponent(videoUrl)}`,
+      { signal: controller.signal }
+    );
+    window.clearTimeout(timer);
+    if (!response.ok) return '';
+    const data = (await response.json()) as { thumbnail_url?: string };
+    return typeof data.thumbnail_url === 'string' ? data.thumbnail_url : '';
+  } catch {
+    return '';
+  }
+}
+
 export async function getPublishedPortfolioVideos(): Promise<VideoProject[]> {
   const { data, error } = await supabase.from('portfolio_videos')
     .select('id, title, client, category, description, role, file_path, preview_path, thumbnail_path, published, aspect_ratio, created_at, display_order')
@@ -23,9 +40,13 @@ export async function getPublishedPortfolioVideos(): Promise<VideoProject[]> {
       const external = decodeExternalVideo(row.file_path);
       if (external) {
         const info = getExternalVideoInfo(external.url);
+        let thumbnail = row.thumbnail_path || info.thumbnail;
+        if (!thumbnail && external.source === 'tiktok') {
+          thumbnail = await fetchTikTokThumbnail(external.url);
+        }
         return {
           id: row.id, title: row.title, client: row.client ?? undefined, category: row.category,
-          thumbnail: row.thumbnail_path || info.thumbnail, description: row.description ?? undefined,
+          thumbnail, description: row.description ?? undefined,
           role: row.role ?? undefined, published: row.published, aspectRatio: row.aspect_ratio,
           videoSource: external.source, tiktokVideoId: external.source === 'tiktok' ? info.id : undefined,
           youtubeVideoId: external.source === 'youtube' ? info.id : undefined,
