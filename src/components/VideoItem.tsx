@@ -405,7 +405,7 @@ export default function VideoItem({
               <ArrowUpRight size={18} />
             </span>
             <span className="video-index">OPEN VIDEO</span>
-          </div>
+          </button>
         )}
       </div>
 

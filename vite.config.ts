@@ -47,14 +47,14 @@ export default defineConfig({
               return;
             }
 
-            const buf = Buffer.from(await imgRes.arrayBuffer());
+            const bytes = new Uint8Array(await imgRes.arrayBuffer());
             res.statusCode = 200;
             res.setHeader(
               'Content-Type',
               imgRes.headers.get('content-type') || 'image/jpeg'
             );
             res.setHeader('Cache-Control', 'public, max-age=86400');
-            res.end(buf);
+            res.end(bytes);
           } catch {
             res.statusCode = 500;
             res.end('Proxy error');
