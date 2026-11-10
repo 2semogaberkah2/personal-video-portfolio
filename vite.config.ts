@@ -10,51 +10,41 @@ export default defineConfig({
         server.middlewares.use('/api/tiktok-thumb', async (req, res) => {
           try {
             const reqUrl = new URL(req.url || '', 'http://localhost');
-            const url = reqUrl.searchParams.get('url') || '';
             const id = reqUrl.searchParams.get('id') || '';
-            const candidates = [
-              url,
-              id ? `https://www.tiktok.com/@tiktok/video/${id}` : '',
-            ].filter(Boolean);
+            const url = reqUrl.searchParams.get('url') || '';
 
-            let thumbnailUrl = '';
-            for (const candidate of candidates) {
-              const r = await fetch(
-                `https://www.tiktok.com/oembed?url=${encodeURIComponent(candidate)}`
-              );
-              if (r.ok) {
-                const data = (await r.json()) as { thumbnail_url?: string };
-                if (data?.thumbnail_url) {
-                  thumbnailUrl = data.thumbnail_url;
-                  break;
-                }
-              }
+            if (!id || !/^\d{8,25}$/.test(id.trim())) {
+              res.statusCode = 400;
+              res.setHeader('Cache-Control', 'public, max-age=0, s-maxage=300');
+              res.end('Invalid or missing TikTok ID');
+              return;
             }
 
-            if (!thumbnailUrl) {
+            const { fetchTikTokCover } = (await server.ssrLoadModule(
+              '/server/tiktokCover.js'
+            )) as {
+              fetchTikTokCover: (
+                id: string,
+                url?: string
+              ) => Promise<{ buffer: Buffer; contentType: string } | null>;
+            };
+
+            const result = await fetchTikTokCover(id, url);
+
+            if (!result || !result.buffer) {
               res.statusCode = 404;
-              res.end('Thumbnail not found');
+              res.setHeader('Cache-Control', 'public, max-age=0, s-maxage=300');
+              res.end('Cover not found');
               return;
             }
 
-            const imgRes = await fetch(thumbnailUrl, {
-              headers: { Referer: 'https://www.tiktok.com/' },
-            });
-            if (!imgRes.ok) {
-              res.statusCode = 302;
-              res.setHeader('Location', thumbnailUrl);
-              res.end();
-              return;
-            }
-
-            const bytes = new Uint8Array(await imgRes.arrayBuffer());
             res.statusCode = 200;
+            res.setHeader('Content-Type', result.contentType);
             res.setHeader(
-              'Content-Type',
-              imgRes.headers.get('content-type') || 'image/jpeg'
+              'Cache-Control',
+              'public, max-age=86400, s-maxage=2592000, stale-while-revalidate=604800'
             );
-            res.setHeader('Cache-Control', 'public, max-age=86400');
-            res.end(bytes);
+            res.end(result.buffer);
           } catch {
             res.statusCode = 500;
             res.end('Proxy error');

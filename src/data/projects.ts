@@ -4,6 +4,7 @@ export type VideoProject = {
   client?: string;
   category?: string;
   thumbnail: string;
+  thumbnailFallbacks?: string[];
   previewVideo?: string;
   fullVideo?: string;
   externalUrl?: string;

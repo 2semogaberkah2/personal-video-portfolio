@@ -19,18 +19,12 @@ type Props = {
 
 function sendTikTokMessage(iframe: HTMLIFrameElement | null, type: string, value?: unknown) {
   if (!iframe?.contentWindow) return;
-  iframe.contentWindow.postMessage(
-    { 'x-tiktok-player': true, type, value },
-    '*'
-  );
+  iframe.contentWindow.postMessage({ 'x-tiktok-player': true, type, value }, '*');
 }
 
 function sendYouTubeMessage(iframe: HTMLIFrameElement | null, func: string) {
   if (!iframe?.contentWindow) return;
-  iframe.contentWindow.postMessage(
-    JSON.stringify({ event: 'command', func, args: [] }),
-    '*'
-  );
+  iframe.contentWindow.postMessage(JSON.stringify({ event: 'command', func, args: [] }), '*');
 }
 
 export default function VideoModal({ project, projects = [], onClose }: Props) {
@@ -41,22 +35,28 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
   const activeVideoRef = useRef<HTMLVideoElement | null>(null);
   const activeIframeRef = useRef<HTMLIFrameElement | null>(null);
 
-  const [activeIndex, setActiveIndex] = useState(0);
+  const [settledIndex, setSettledIndex] = useState(0);
   const [isMuted, setIsMuted] = useState(true);
+  const [playerReady, setPlayerReady] = useState(false);
+  const [thumbIndices, setThumbIndices] = useState<Record<string, number>>({});
 
-  const activeIndexRef = useRef(0);
-  activeIndexRef.current = activeIndex;
+  const settledIndexRef = useRef(0);
+  settledIndexRef.current = settledIndex;
 
   const isMutedRef = useRef(true);
   isMutedRef.current = isMuted;
+
+  const playerReadyRef = useRef(false);
+  playerReadyRef.current = playerReady;
 
   const feedProjects = projects.length ? projects : project ? [project] : [];
   const initialIndex = Math.max(
     0,
     feedProjects.findIndex((item) => item.id === project?.id)
   );
-  const activeProject = feedProjects[activeIndex] ?? project;
+  const activeProject = feedProjects[settledIndex] ?? project;
 
+  // goTo hanya memanggil scrollIntoView tanpa mengubah state langsung
   const goTo = useCallback(
     (index: number) => {
       const safeIndex = Math.max(0, Math.min(index, feedProjects.length - 1));
@@ -64,7 +64,6 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
         behavior: 'smooth',
         block: 'start',
       });
-      setActiveIndex(safeIndex);
     },
     [feedProjects.length]
   );
@@ -80,6 +79,7 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
   useEffect(() => {
     if (!project) return;
     setIsMuted(true);
+    setPlayerReady(false);
     previousFocus.current = document.activeElement as HTMLElement;
     const oldOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
@@ -89,11 +89,11 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
       if (event.key === 'Escape') onClose();
       if (event.key === 'ArrowDown') {
         event.preventDefault();
-        goTo(activeIndexRef.current + 1);
+        goTo(settledIndexRef.current + 1);
       }
       if (event.key === 'ArrowUp') {
         event.preventDefault();
-        goTo(activeIndexRef.current - 1);
+        goTo(settledIndexRef.current - 1);
       }
     };
 
@@ -107,7 +107,7 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
 
   useEffect(() => {
     if (!project) return;
-    setActiveIndex(initialIndex);
+    setSettledIndex(initialIndex);
     requestAnimationFrame(() => {
       slideRefs.current[initialIndex]?.scrollIntoView({
         behavior: 'auto',
@@ -116,16 +116,30 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
     });
   }, [project?.id, initialIndex, project]);
 
+  // Observer dengan debounce ~160ms sebagai satu-satunya sumber kebenaran settledIndex
   useEffect(() => {
     const feed = feedRef.current;
     if (!feed || !project) return;
+
+    let debounceTimer: number | null = null;
 
     const observer = new IntersectionObserver(
       (entries) => {
         entries.forEach((entry) => {
           if (entry.isIntersecting && entry.intersectionRatio >= 0.55) {
             const index = Number((entry.target as HTMLElement).dataset.index);
-            if (Number.isFinite(index)) setActiveIndex(index);
+            if (Number.isFinite(index)) {
+              if (debounceTimer) window.clearTimeout(debounceTimer);
+              debounceTimer = window.setTimeout(() => {
+                setSettledIndex((current) => {
+                  if (current !== index) {
+                    setPlayerReady(false);
+                    return index;
+                  }
+                  return current;
+                });
+              }, 160);
+            }
           }
         });
       },
@@ -133,30 +147,34 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
     );
 
     slideRefs.current.forEach((slide) => slide && observer.observe(slide));
-    return () => observer.disconnect();
+    return () => {
+      if (debounceTimer) window.clearTimeout(debounceTimer);
+      observer.disconnect();
+    };
   }, [project, feedProjects.length]);
 
-  // Sinkronisasi autoplay & status mute/unmute saat slide aktif berubah
+  // Handler player pada slide aktif setelah settledIndex berhenti
   useEffect(() => {
     if (!project || !activeProject) return;
+    setPlayerReady(false);
+
+    let forceTimer: number | null = null;
+
+    // Safety timeout 1500ms agar tombol play native tetap bisa disentuh bila autoplay diblokir
+    forceTimer = window.setTimeout(() => {
+      setPlayerReady(true);
+    }, 1500);
 
     const handleMessage = (event: MessageEvent) => {
-      if (
-        !activeIframeRef.current ||
-        event.source !== activeIframeRef.current.contentWindow
-      ) {
+      if (!activeIframeRef.current || event.source !== activeIframeRef.current.contentWindow) {
         return;
       }
-      const data = event.data as {
-        'x-tiktok-player'?: boolean;
-        type?: string;
-      } | null;
+      const data = event.data as { 'x-tiktok-player'?: boolean; type?: string } | null;
       if (data && data['x-tiktok-player'] && data.type === 'onPlayerReady') {
-        sendTikTokMessage(
-          activeIframeRef.current,
-          isMutedRef.current ? 'mute' : 'unMute'
-        );
+        sendTikTokMessage(activeIframeRef.current, isMutedRef.current ? 'mute' : 'unMute');
         sendTikTokMessage(activeIframeRef.current, 'play');
+        setPlayerReady(true);
+        if (forceTimer) window.clearTimeout(forceTimer);
       }
     };
 
@@ -167,27 +185,11 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
       activeVideoRef.current.play().catch(() => {});
     }
 
-    const timer = window.setTimeout(() => {
-      if (activeProject.tiktokVideoId) {
-        sendTikTokMessage(
-          activeIframeRef.current,
-          isMutedRef.current ? 'mute' : 'unMute'
-        );
-        sendTikTokMessage(activeIframeRef.current, 'play');
-      } else if (activeProject.youtubeVideoId) {
-        sendYouTubeMessage(
-          activeIframeRef.current,
-          isMutedRef.current ? 'mute' : 'unMute'
-        );
-        sendYouTubeMessage(activeIframeRef.current, 'playVideo');
-      }
-    }, 650);
-
     return () => {
       window.removeEventListener('message', handleMessage);
-      window.clearTimeout(timer);
+      if (forceTimer) window.clearTimeout(forceTimer);
     };
-  }, [project, activeIndex, activeProject]);
+  }, [project, settledIndex, activeProject]);
 
   const toggleMute = () => {
     const nextMuted = !isMuted;
@@ -195,17 +197,17 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
 
     if (activeVideoRef.current) {
       activeVideoRef.current.muted = nextMuted;
-      if (activeVideoRef.current.paused) {
+      if (!nextMuted && activeVideoRef.current.paused) {
         activeVideoRef.current.play().catch(() => {});
       }
     }
 
-    if (activeProject?.tiktokVideoId) {
-      sendTikTokMessage(activeIframeRef.current, nextMuted ? 'mute' : 'unMute');
-      sendTikTokMessage(activeIframeRef.current, 'play');
-    } else if (activeProject?.youtubeVideoId) {
-      sendYouTubeMessage(activeIframeRef.current, nextMuted ? 'mute' : 'unMute');
-      sendYouTubeMessage(activeIframeRef.current, 'playVideo');
+    if (playerReadyRef.current) {
+      if (activeProject?.tiktokVideoId) {
+        sendTikTokMessage(activeIframeRef.current, nextMuted ? 'mute' : 'unMute');
+      } else if (activeProject?.youtubeVideoId) {
+        sendYouTubeMessage(activeIframeRef.current, nextMuted ? 'mute' : 'unMute');
+      }
     }
   };
 
@@ -218,7 +220,7 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
       aria-modal="true"
       aria-label="Preview karya video"
     >
-      {/* Topbar Navigasi & Tombol Kontrol */}
+      {/* Topbar Navigasi & Kontrol */}
       <header className="scroll-preview-topbar">
         <div className="scroll-preview-topbar-left">
           <button
@@ -248,7 +250,7 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
         </div>
 
         <div className="scroll-preview-counter">
-          {String(activeIndex + 1).padStart(2, '0')} <i>/</i>{' '}
+          {String(settledIndex + 1).padStart(2, '0')} <i>/</i>{' '}
           {String(feedProjects.length).padStart(2, '0')}
         </div>
 
@@ -264,8 +266,8 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
           <div className="scroll-preview-arrows">
             <button
               type="button"
-              onClick={() => goTo(activeIndex - 1)}
-              disabled={activeIndex === 0}
+              onClick={() => goTo(settledIndex - 1)}
+              disabled={settledIndex === 0}
               aria-label="Video sebelumnya"
               title="Video sebelumnya"
             >
@@ -273,8 +275,8 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
             </button>
             <button
               type="button"
-              onClick={() => goTo(activeIndex + 1)}
-              disabled={activeIndex === feedProjects.length - 1}
+              onClick={() => goTo(settledIndex + 1)}
+              disabled={settledIndex === feedProjects.length - 1}
               aria-label="Video berikutnya"
               title="Video berikutnya"
             >
@@ -284,11 +286,17 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
         </div>
       </header>
 
-      {/* Area Feed Scroll Atas-Bawah (Laptop & HP) */}
+      {/* Area Feed Scroll Atas-Bawah */}
       <div className="scroll-preview-feed" ref={feedRef}>
         {feedProjects.map((item, index) => {
-          const isCurrent = index === activeIndex;
+          const isCurrent = index === settledIndex;
           const mp4Source = item.fullVideo || item.previewVideo;
+
+          const candidates = [item.thumbnail, ...(item.thumbnailFallbacks ?? [])].filter(
+            (c): c is string => Boolean(c && c.trim())
+          );
+          const currentThumbIdx = thumbIndices[item.id] ?? 0;
+          const currentCoverUrl = candidates[currentThumbIdx] || '';
 
           return (
             <section
@@ -303,54 +311,22 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
               }}
             >
               <div className="viewer-slide-card">
-                {/* 1. Area Video (100% Bersih dari Teks Web) */}
+                {/* 1. Area Video */}
                 <div className="viewer-video-box">
-                  {isCurrent ? (
-                    item.youtubeVideoId ? (
-                      <iframe
-                        ref={activeIframeRef}
-                        title={`Video YouTube: ${item.title}`}
-                        src={`https://www.youtube-nocookie.com/embed/${item.youtubeVideoId}?autoplay=1&mute=${isMuted ? 1 : 0}&playsinline=1&rel=0&enablejsapi=1&loop=1&playlist=${item.youtubeVideoId}`}
-                        allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
-                        allowFullScreen
-                        loading="eager"
-                      />
-                    ) : item.tiktokVideoId ? (
-                      <iframe
-                        ref={activeIframeRef}
-                        title={`Video TikTok: ${item.title}`}
-                        src={`https://www.tiktok.com/player/v1/${item.tiktokVideoId}?autoplay=1&loop=1&music_info=0&description=0&rel=0&native_context_menu=0&closed_caption=0`}
-                        allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
-                        allowFullScreen
-                        loading="eager"
-                      />
-                    ) : mp4Source ? (
-                      <video
-                        ref={activeVideoRef}
-                        src={mp4Source}
-                        poster={item.thumbnail || undefined}
-                        controls
-                        autoPlay
-                        loop
-                        muted={isMuted}
-                        playsInline
-                        preload="auto"
-                      >
-                        Browser Anda tidak mendukung video.
-                      </video>
-                    ) : (
-                      <div className="modal-no-video">
-                        <span>VIDEO BELUM TERSEDIA</span>
-                        <p>Tambahkan sumber video yang valid melalui halaman admin.</p>
-                      </div>
-                    )
-                  ) : item.thumbnail ? (
+                  {/* Layer Dasar: <img> Cover selalu ada di bawah */}
+                  {currentCoverUrl ? (
                     <img
                       className="viewer-inactive-poster"
-                      src={item.thumbnail}
+                      src={currentCoverUrl}
                       alt={item.title}
                       referrerPolicy="no-referrer"
-                      loading="lazy"
+                      decoding="async"
+                      onError={() =>
+                        setThumbIndices((prev) => ({
+                          ...prev,
+                          [item.id]: (prev[item.id] ?? 0) + 1,
+                        }))
+                      }
                     />
                   ) : mp4Source ? (
                     <video
@@ -368,24 +344,73 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
                       <span>{item.title}</span>
                     </div>
                   )}
+
+                  {/* Layer Atas: Player aktif HANYA di-mount untuk index === settledIndex */}
+                  {isCurrent && (
+                    <>
+                      {item.youtubeVideoId ? (
+                        <iframe
+                          ref={activeIframeRef}
+                          className={playerReady ? 'modal-player-frame is-ready' : 'modal-player-frame'}
+                          title={`Video YouTube: ${item.title}`}
+                          src={`https://www.youtube-nocookie.com/embed/${item.youtubeVideoId}?autoplay=1&mute=1&playsinline=1&rel=0&enablejsapi=1&loop=1&playlist=${item.youtubeVideoId}`}
+                          allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+                          allowFullScreen
+                          loading="eager"
+                          onLoad={() => {
+                            sendYouTubeMessage(activeIframeRef.current, isMutedRef.current ? 'mute' : 'unMute');
+                            sendYouTubeMessage(activeIframeRef.current, 'playVideo');
+                            setPlayerReady(true);
+                          }}
+                        />
+                      ) : item.tiktokVideoId ? (
+                        <iframe
+                          ref={activeIframeRef}
+                          className={playerReady ? 'modal-player-frame is-ready' : 'modal-player-frame'}
+                          title={`Video TikTok: ${item.title}`}
+                          src={`https://www.tiktok.com/player/v1/${item.tiktokVideoId}?autoplay=1&loop=1&music_info=0&description=0&rel=0&native_context_menu=0&closed_caption=0`}
+                          allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
+                          allowFullScreen
+                          loading="eager"
+                        />
+                      ) : mp4Source ? (
+                        <video
+                          ref={activeVideoRef}
+                          className="modal-player-frame is-ready"
+                          src={mp4Source}
+                          poster={item.thumbnail || undefined}
+                          controls
+                          autoPlay
+                          loop
+                          muted={isMuted}
+                          playsInline
+                          preload="auto"
+                          onPlaying={() => setPlayerReady(true)}
+                        >
+                          Browser Anda tidak mendukung video.
+                        </video>
+                      ) : (
+                        <div className="modal-no-video">
+                          <span>VIDEO BELUM TERSEDIA</span>
+                          <p>Tambahkan sumber video yang valid melalui halaman admin.</p>
+                        </div>
+                      )}
+                    </>
+                  )}
                 </div>
 
-                {/* 2. Area Informasi Teks di Luar Video (di Bawah pada HP, di Samping Kanan pada Laptop) */}
+                {/* 2. Area Informasi Teks di Luar Video */}
                 <div className="viewer-info-box">
                   <div className="viewer-info-main">
                     <div className="viewer-info-meta-top">
-                      <span className="viewer-kicker">
-                        {item.category || 'VIDEO PROJECT'}
-                      </span>
+                      <span className="viewer-kicker">{item.category || 'VIDEO PROJECT'}</span>
                       <span className="viewer-order-badge">
                         #{String(index + 1).padStart(2, '0')}
                       </span>
                     </div>
 
                     <h2 className="viewer-title">{item.title}</h2>
-                    <p className="viewer-client">
-                      {item.client || 'Independent project'}
-                    </p>
+                    <p className="viewer-client">{item.client || 'Independent project'}</p>
 
                     {item.description && (
                       <p className="viewer-description">{item.description}</p>
@@ -409,11 +434,7 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
                     </button>
 
                     <div className="viewer-secondary-actions">
-                      <button
-                        type="button"
-                        className="viewer-mute-btn"
-                        onClick={toggleMute}
-                      >
+                      <button type="button" className="viewer-mute-btn" onClick={toggleMute}>
                         {isMuted ? <VolumeX size={15} /> : <Volume2 size={15} />}
                         <span>{isMuted ? 'UNMUTE VIDEO' : 'MUTE VIDEO'}</span>
                       </button>

@@ -1,14 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import {
-  ArrowUpRight,
-  Play,
-  Volume2,
-  VolumeX,
-} from 'lucide-react';
+import { ArrowUpRight, Play, Volume2, VolumeX } from 'lucide-react';
 import type { VideoProject } from '../data/projects';
 
 type Props = {
   project: VideoProject;
+  index?: number;
   onOpen: (project: VideoProject) => void;
   onPreview: (id: string | null) => void;
   activePreview: string | null;
@@ -16,39 +12,30 @@ type Props = {
 
 function sendTikTokCommand(iframe: HTMLIFrameElement | null, type: string, value?: unknown) {
   if (!iframe?.contentWindow) return;
-  iframe.contentWindow.postMessage(
-    { 'x-tiktok-player': true, type, value },
-    '*'
-  );
+  iframe.contentWindow.postMessage({ 'x-tiktok-player': true, type, value }, '*');
 }
 
 function sendYouTubeCommand(iframe: HTMLIFrameElement | null, func: string) {
   if (!iframe?.contentWindow) return;
-  iframe.contentWindow.postMessage(
-    JSON.stringify({ event: 'command', func, args: [] }),
-    '*'
-  );
+  iframe.contentWindow.postMessage(JSON.stringify({ event: 'command', func, args: [] }), '*');
 }
 
 export default function VideoItem({
   project,
+  index = 0,
   onOpen,
   onPreview,
   activePreview,
 }: Props) {
-  const [imageFailed, setImageFailed] = useState(false);
-  const [fallbackThumbUrl, setFallbackThumbUrl] = useState('');
-  const [videoFailed, setVideoFailed] = useState(false);
+  const [candidateIndex, setCandidateIndex] = useState(0);
   const [touchDevice, setTouchDevice] = useState(false);
   const [isMobileViewport, setIsMobileViewport] = useState(false);
   const [isMuted, setIsMuted] = useState(true);
-  const [isBuffering, setIsBuffering] = useState(false);
-  const [showSlowHint, setShowSlowHint] = useState(false);
+  const [mountLive, setMountLive] = useState(false);
+  const [liveReady, setLiveReady] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const frameRef = useRef<HTMLDivElement>(null);
-  const activePreviewRef = useRef(activePreview);
   const isMutedRef = useRef(isMuted);
 
   const ratio =
@@ -58,12 +45,13 @@ export default function VideoItem({
         ? '1 / 1'
         : '9 / 16';
 
+  const isYouTube = Boolean(project.youtubeVideoId);
+  const isTikTok = Boolean(project.tiktokVideoId);
+  const previewUrl = project.previewVideo || project.fullVideo;
+  const isMp4 = !isTikTok && !isYouTube && Boolean(previewUrl);
+
   const cleanTikTokParams =
     'controls=0&progress_bar=0&play_button=0&volume_control=0&fullscreen_button=0&timestamp=0&music_info=0&description=0&loop=1&rel=0&native_context_menu=0&closed_caption=0';
-
-  const tiktokStaticEmbed = project.tiktokVideoId
-    ? `https://www.tiktok.com/player/v1/${project.tiktokVideoId}?autoplay=0&${cleanTikTokParams}`
-    : null;
 
   const tiktokHoverEmbed = project.tiktokVideoId
     ? `https://www.tiktok.com/player/v1/${project.tiktokVideoId}?autoplay=1&${cleanTikTokParams}`
@@ -73,18 +61,18 @@ export default function VideoItem({
     ? `https://www.youtube-nocookie.com/embed/${project.youtubeVideoId}?autoplay=1&mute=1&controls=0&playsinline=1&rel=0&enablejsapi=1&loop=1&playlist=${project.youtubeVideoId}`
     : null;
 
-  const isYouTube = Boolean(project.youtubeVideoId);
-  const isTikTok = Boolean(project.tiktokVideoId);
-
-  const previewUrl = project.previewVideo || project.fullVideo;
-  const canPreviewMp4 =
-    !isTikTok && !isYouTube && Boolean(previewUrl) && !videoFailed;
-  const canHoverPreview = canPreviewMp4 || isTikTok || isYouTube;
   const isActive = activePreview === project.id;
+  const canLive = !touchDevice && !isMobileViewport && isActive && (isMp4 || isTikTok || isYouTube);
 
+  const candidates = [project.thumbnail, ...(project.thumbnailFallbacks ?? [])].filter(
+    (c): c is string => Boolean(c && c.trim())
+  );
+  const currentCover = candidates[candidateIndex] || '';
+
+  // Reset indeks kandidat gambar bila id atau thumbnail berubah
   useEffect(() => {
-    activePreviewRef.current = activePreview;
-  }, [activePreview]);
+    setCandidateIndex(0);
+  }, [project.id, project.thumbnail]);
 
   useEffect(() => {
     isMutedRef.current = isMuted;
@@ -109,65 +97,26 @@ export default function VideoItem({
     };
   }, []);
 
-  // Ambil thumbnail TikTok langsung via oEmbed jika belum ada atau gagal
+  // Hover-intent delay 250ms sebelum me-mount layer live desktop
   useEffect(() => {
-    if (!project.tiktokVideoId) return;
-    if (project.thumbnail && !imageFailed) return;
-    if (fallbackThumbUrl) return;
+    if (!canLive) {
+      setMountLive(false);
+      setLiveReady(false);
+      return;
+    }
 
-    let alive = true;
-    const candidates = [
-      project.externalUrl || '',
-      `https://www.tiktok.com/@tiktok/video/${project.tiktokVideoId}`,
-    ].filter(Boolean);
-
-    (async () => {
-      for (const target of candidates) {
-        try {
-          const res = await fetch(`https://www.tiktok.com/oembed?url=${encodeURIComponent(target)}`);
-          if (res.ok) {
-            const data = (await res.json()) as { thumbnail_url?: string };
-            if (alive && data?.thumbnail_url) {
-              setFallbackThumbUrl(data.thumbnail_url);
-              setImageFailed(false);
-              return;
-            }
-          }
-        } catch {
-          // coba kandidat berikutnya
-        }
-      }
-    })();
+    const timer = window.setTimeout(() => {
+      setMountLive(true);
+    }, 250);
 
     return () => {
-      alive = false;
+      window.clearTimeout(timer);
     };
-  }, [imageFailed, project.tiktokVideoId, project.externalUrl, project.thumbnail, fallbackThumbUrl]);
+  }, [canLive]);
 
-  // Kontrol pemutaran MP4 saat hover di laptop
+  // Handler TikTok message listener saat live layer desktop aktif
   useEffect(() => {
-    const video = videoRef.current;
-    if (!video || isMobileViewport || !canPreviewMp4) return;
-
-    if (isActive) {
-      if (video.paused) {
-        setIsBuffering(true);
-        video.muted = isMutedRef.current;
-        video.play().catch(() => {
-          setIsBuffering(false);
-        });
-      }
-    } else {
-      video.pause();
-      video.currentTime = 0;
-      setIsBuffering(false);
-      setShowSlowHint(false);
-    }
-  }, [isActive, isMobileViewport, canPreviewMp4]);
-
-  // Sinkronisasi postMessage untuk TikTok / YouTube saat hover di laptop
-  useEffect(() => {
-    if (!isActive || isMobileViewport || (!isTikTok && !isYouTube)) return;
+    if (!mountLive || !isTikTok) return;
 
     const handleMessage = (event: MessageEvent) => {
       if (!iframeRef.current || event.source !== iframeRef.current.contentWindow) return;
@@ -175,54 +124,37 @@ export default function VideoItem({
       if (data && data['x-tiktok-player'] && data.type === 'onPlayerReady') {
         sendTikTokCommand(iframeRef.current, isMutedRef.current ? 'mute' : 'unMute');
         sendTikTokCommand(iframeRef.current, 'play');
+        setLiveReady(true);
       }
     };
 
     window.addEventListener('message', handleMessage);
 
-    const timer = window.setTimeout(() => {
-      if (isTikTok) {
-        sendTikTokCommand(iframeRef.current, isMutedRef.current ? 'mute' : 'unMute');
-        sendTikTokCommand(iframeRef.current, 'play');
-      } else if (isYouTube) {
-        sendYouTubeCommand(iframeRef.current, isMutedRef.current ? 'mute' : 'unMute');
-        sendYouTubeCommand(iframeRef.current, 'playVideo');
-      }
-    }, 650);
+    // Fallback timer bila onPlayerReady tidak diterima
+    const fallbackTimer = window.setTimeout(() => {
+      sendTikTokCommand(iframeRef.current, isMutedRef.current ? 'mute' : 'unMute');
+      sendTikTokCommand(iframeRef.current, 'play');
+      setLiveReady(true);
+    }, 1200);
 
     return () => {
       window.removeEventListener('message', handleMessage);
-      window.clearTimeout(timer);
+      window.clearTimeout(fallbackTimer);
     };
-  }, [isActive, isMobileViewport, isTikTok, isYouTube]);
+  }, [mountLive, isTikTok]);
 
+  // Kontrol audio mute/unmute
   useEffect(() => {
-    const video = videoRef.current;
-    if (video) video.muted = isMuted;
-
-    if (isActive && !isMobileViewport) {
-      if (isTikTok) {
-        sendTikTokCommand(iframeRef.current, isMuted ? 'mute' : 'unMute');
-      } else if (isYouTube) {
-        sendYouTubeCommand(iframeRef.current, isMuted ? 'mute' : 'unMute');
-      }
+    if (isMp4 && videoRef.current) {
+      videoRef.current.muted = isMuted;
+    } else if (isTikTok && iframeRef.current) {
+      sendTikTokCommand(iframeRef.current, isMuted ? 'mute' : 'unMute');
+    } else if (isYouTube && iframeRef.current) {
+      sendYouTubeCommand(iframeRef.current, isMuted ? 'mute' : 'unMute');
     }
-  }, [isMuted, isActive, isMobileViewport, isTikTok, isYouTube]);
+  }, [isMuted, isMp4, isTikTok, isYouTube]);
 
-  useEffect(() => {
-    if (!isActive || !isBuffering) {
-      setShowSlowHint(false);
-      return;
-    }
-
-    const timeout = window.setTimeout(() => {
-      setShowSlowHint(true);
-    }, 3500);
-
-    return () => window.clearTimeout(timeout);
-  }, [isActive, isBuffering]);
-
-  // Reset mute ke true saat kursor keluar dari kartu
+  // Reset mute ke default true saat kursor keluar
   useEffect(() => {
     if (!isActive) {
       setIsMuted(true);
@@ -231,15 +163,10 @@ export default function VideoItem({
 
   const toggleMute = (event: React.MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
-
     const nextMuted = !isMuted;
     setIsMuted(nextMuted);
 
-    if (!isActive && !isMobileViewport) {
-      onPreview(project.id);
-    }
-
-    if (canPreviewMp4 && videoRef.current) {
+    if (isMp4 && videoRef.current) {
       videoRef.current.muted = nextMuted;
       if (!nextMuted && videoRef.current.paused) {
         videoRef.current.play().catch(() => {});
@@ -253,24 +180,21 @@ export default function VideoItem({
     }
   };
 
-  const displayThumbnail = fallbackThumbUrl || project.thumbnail;
-  const showDesktopHoverEmbed = !isMobileViewport && !touchDevice && isActive;
-
   return (
     <article
       className="video-item-card"
       onMouseEnter={() => {
-        if (!touchDevice && !isMobileViewport && canHoverPreview) {
+        if (!touchDevice && !isMobileViewport) {
           onPreview(project.id);
         }
       }}
       onMouseLeave={() => {
-        if (!touchDevice && !isMobileViewport && canHoverPreview && isActive) {
+        if (!touchDevice && !isMobileViewport && isActive) {
           onPreview(null);
         }
       }}
       onFocus={() => {
-        if (!touchDevice && !isMobileViewport && canHoverPreview) {
+        if (!touchDevice && !isMobileViewport) {
           onPreview(project.id);
         }
       }}
@@ -278,7 +202,6 @@ export default function VideoItem({
         if (
           !touchDevice &&
           !isMobileViewport &&
-          canHoverPreview &&
           isActive &&
           !event.currentTarget.contains(event.relatedTarget as Node | null)
         ) {
@@ -286,11 +209,7 @@ export default function VideoItem({
         }
       }}
     >
-      <div
-        ref={frameRef}
-        className="video-frame"
-        style={{ aspectRatio: ratio }}
-      >
+      <div className="video-frame" style={{ aspectRatio: ratio }}>
         <div
           className="video-card-fallback"
           role="button"
@@ -304,106 +223,28 @@ export default function VideoItem({
           }}
           aria-label={`Buka video ${project.title}`}
         >
-          {canPreviewMp4 ? (
-            <>
-              <video
-                ref={videoRef}
-                className="video-poster"
-                src={showDesktopHoverEmbed ? previewUrl : `${previewUrl}#t=0.1`}
-                muted={isMuted}
-                loop
-                playsInline
-                preload="metadata"
-                poster={!imageFailed && displayThumbnail ? displayThumbnail : undefined}
-                onLoadedData={(e) => {
-                  if (!showDesktopHoverEmbed) {
-                    try {
-                      e.currentTarget.currentTime = 0.1;
-                    } catch {
-                      // ignore seek error
-                    }
-                  }
-                }}
-                onLoadStart={() => {
-                  if (activePreviewRef.current === project.id && !isMobileViewport) {
-                    setIsBuffering(true);
-                  }
-                }}
-                onWaiting={() => {
-                  if (!isMobileViewport) setIsBuffering(true);
-                }}
-                onPlaying={() => {
-                  setIsBuffering(false);
-                  setShowSlowHint(false);
-                }}
-                onCanPlay={() => setIsBuffering(false)}
-                onError={() => {
-                  setVideoFailed(true);
-                  setIsBuffering(false);
-                }}
-                style={{
-                  width: '100%',
-                  height: '100%',
-                  objectFit: 'cover',
-                  pointerEvents: 'none',
-                }}
-              />
-
-              {showDesktopHoverEmbed && isBuffering && !videoFailed && (
-                <div className="video-loading-indicator" role="status">
-                  <span className="video-loading-spinner" />
-                  <span>
-                    {showSlowHint
-                      ? 'Koneksi lambat? Video masih dimuat.'
-                      : 'Menyiapkan video…'}
-                  </span>
-                </div>
-              )}
-            </>
-          ) : showDesktopHoverEmbed && isTikTok && tiktokHoverEmbed ? (
-            <iframe
-              ref={iframeRef}
-              className="video-tiktok-embed"
-              title={`Preview TikTok: ${project.title}`}
-              src={tiktokHoverEmbed}
-              allow="autoplay; encrypted-media"
-              referrerPolicy="strict-origin-when-cross-origin"
-              tabIndex={-1}
-              style={{ pointerEvents: 'none' }}
-            />
-          ) : showDesktopHoverEmbed && isYouTube && youtubeHoverEmbed ? (
-            <iframe
-              ref={iframeRef}
-              className="video-tiktok-embed"
-              title={`Preview YouTube: ${project.title}`}
-              src={youtubeHoverEmbed}
-              allow="autoplay; encrypted-media"
-              referrerPolicy="strict-origin-when-cross-origin"
-              tabIndex={-1}
-              style={{ pointerEvents: 'none' }}
-            />
-          ) : !imageFailed && displayThumbnail ? (
+          {/* Layer 1 (Dasar): Cover Gambar Murni (Tidak pernah live iframe di touch/mobile) */}
+          {currentCover ? (
             <img
               className="video-poster"
-              src={displayThumbnail}
+              src={currentCover}
               alt={`Thumbnail ${project.title}`}
               referrerPolicy="no-referrer"
-              crossOrigin="anonymous"
-              onError={() => setImageFailed(true)}
-              style={{
-                objectPosition: project.posterPosition ?? 'center',
-              }}
+              decoding="async"
+              loading={index < 6 ? 'eager' : 'lazy'}
+              onError={() => setCandidateIndex((prev) => prev + 1)}
+              style={{ objectPosition: project.posterPosition ?? 'center' }}
             />
-          ) : isTikTok && tiktokStaticEmbed ? (
-            <div className="mobile-tiktok-scaled-wrap" aria-hidden="true">
-              <iframe
-                className="mobile-tiktok-scaled-iframe"
-                title={`Thumbnail TikTok: ${project.title}`}
-                src={tiktokStaticEmbed}
-                referrerPolicy="strict-origin-when-cross-origin"
-                tabIndex={-1}
-              />
-            </div>
+          ) : isMp4 && previewUrl ? (
+            /* Last resort bila thumbnail MP4 kosong */
+            <video
+              className="video-poster"
+              src={`${previewUrl}#t=0.1`}
+              muted
+              playsInline
+              preload="metadata"
+              style={{ width: '100%', height: '100%', objectFit: 'cover', pointerEvents: 'none' }}
+            />
           ) : (
             <div className="asset-placeholder">
               <span className="placeholder-icon">
@@ -414,8 +255,83 @@ export default function VideoItem({
             </div>
           )}
 
-          {/* Tombol Mute/Unmute tampil di Laptop saat card sedang di-hover / aktif */}
-          {!isMobileViewport && canHoverPreview && (
+          {/* Layer 2: Live Player Desktop (Mount hanya setelah hover-intent 250ms) */}
+          {mountLive && (
+            <>
+              {isMp4 && previewUrl && (
+                <video
+                  ref={videoRef}
+                  className={liveReady ? 'video-poster-live is-ready' : 'video-poster-live'}
+                  src={previewUrl}
+                  muted={isMuted}
+                  loop
+                  playsInline
+                  autoPlay
+                  preload="auto"
+                  onPlaying={() => setLiveReady(true)}
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    width: '100%',
+                    height: '100%',
+                    objectFit: 'cover',
+                    pointerEvents: 'none',
+                    zIndex: 2,
+                  }}
+                />
+              )}
+
+              {isTikTok && tiktokHoverEmbed && (
+                <iframe
+                  ref={iframeRef}
+                  className={liveReady ? 'video-tiktok-embed is-ready' : 'video-tiktok-embed'}
+                  title={`Preview TikTok: ${project.title}`}
+                  src={tiktokHoverEmbed}
+                  allow="autoplay; encrypted-media"
+                  referrerPolicy="strict-origin-when-cross-origin"
+                  tabIndex={-1}
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    width: '100%',
+                    height: '100%',
+                    border: 0,
+                    pointerEvents: 'none',
+                    zIndex: 2,
+                  }}
+                />
+              )}
+
+              {isYouTube && youtubeHoverEmbed && (
+                <iframe
+                  ref={iframeRef}
+                  className={liveReady ? 'video-tiktok-embed is-ready' : 'video-tiktok-embed'}
+                  title={`Preview YouTube: ${project.title}`}
+                  src={youtubeHoverEmbed}
+                  allow="autoplay; encrypted-media"
+                  referrerPolicy="strict-origin-when-cross-origin"
+                  tabIndex={-1}
+                  onLoad={() => {
+                    sendYouTubeCommand(iframeRef.current, isMutedRef.current ? 'mute' : 'unMute');
+                    sendYouTubeCommand(iframeRef.current, 'playVideo');
+                    setLiveReady(true);
+                  }}
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    width: '100%',
+                    height: '100%',
+                    border: 0,
+                    pointerEvents: 'none',
+                    zIndex: 2,
+                  }}
+                />
+              )}
+            </>
+          )}
+
+          {/* Tombol Mute/Unmute Desktop */}
+          {!isMobileViewport && !touchDevice && isActive && (
             <button
               type="button"
               className="video-volume-toggle"
@@ -427,7 +343,8 @@ export default function VideoItem({
             </button>
           )}
 
-          {!showDesktopHoverEmbed && (
+          {/* Overlay Play Icon tampil selama live layer belum aktif */}
+          {!liveReady && (
             <span className="video-play-overlay" aria-hidden="true">
               <Play size={isMobileViewport ? 16 : 22} fill="currentColor" />
             </span>
@@ -445,9 +362,7 @@ export default function VideoItem({
           <h3>{project.title}</h3>
           <p>{project.client ?? 'Independent project'}</p>
         </div>
-        <span className="project-category">
-          {project.category ?? 'VIDEO'}
-        </span>
+        <span className="project-category">{project.category ?? 'VIDEO'}</span>
       </div>
     </article>
   );

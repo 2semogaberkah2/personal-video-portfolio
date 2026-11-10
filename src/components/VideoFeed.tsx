@@ -77,9 +77,10 @@ export default function VideoFeed() {
       {visibleProjects.length > 0 ? (
         <>
           <div className="video-grid">
-            {displayedProjects.map((project) => (
+            {displayedProjects.map((project, index) => (
               <VideoItem
                 key={project.id}
+                index={index}
                 project={project}
                 onOpen={setSelected}
                 onPreview={setActivePreview}

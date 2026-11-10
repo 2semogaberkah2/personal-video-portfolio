@@ -18,7 +18,11 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
-import { deletePortfolioVideo, uploadPortfolioVideo } from '../lib/portfolioUpload';
+import {
+  deletePortfolioVideo,
+  persistTikTokCover,
+  uploadPortfolioVideo,
+} from '../lib/portfolioUpload';
 import { processVideo } from '../lib/videoProcessor';
 import {
   decodeExternalVideo,
@@ -26,6 +30,7 @@ import {
   getExternalVideoInfo,
   type ExternalVideoSource,
 } from '../lib/externalVideo';
+import { isTikTokCdnUrl, resolveCoverUrl, tiktokProxyUrl } from '../lib/cover';
 
 const categories = [
   'TikTok Content',
@@ -53,28 +58,6 @@ type VideoRecord = {
 };
 
 const ADMIN_UID = 'a9009276-3516-466c-8a56-43ddb2d9b04a';
-
-async function fetchTikTokThumbnailDirect(url: string, id: string): Promise<string> {
-  const candidates = [
-    url.trim(),
-    id ? `https://www.tiktok.com/@tiktok/video/${id.trim()}` : '',
-  ].filter(Boolean);
-
-  for (const candidate of candidates) {
-    try {
-      const res = await fetch(
-        `https://www.tiktok.com/oembed?url=${encodeURIComponent(candidate)}`
-      );
-      if (res.ok) {
-        const data = (await res.json()) as { thumbnail_url?: string };
-        if (data?.thumbnail_url) return data.thumbnail_url;
-      }
-    } catch {
-      // coba kandidat berikutnya
-    }
-  }
-  return '';
-}
 
 export default function AdminPanel() {
   const [sessionReady, setSessionReady] = useState(false);
@@ -135,9 +118,7 @@ export default function AdminPanel() {
           await refresh();
         } catch (err) {
           if (alive) {
-            setError(
-              err instanceof Error ? err.message : 'Gagal memuat daftar video.'
-            );
+            setError(err instanceof Error ? err.message : 'Gagal memuat daftar video.');
           }
         }
       }
@@ -149,9 +130,7 @@ export default function AdminPanel() {
       if (user?.id === ADMIN_UID) {
         window.setTimeout(() => {
           void refresh().catch((err: unknown) =>
-            setError(
-              err instanceof Error ? err.message : 'Gagal memuat daftar video.'
-            )
+            setError(err instanceof Error ? err.message : 'Gagal memuat daftar video.')
           );
         }, 0);
       } else {
@@ -277,9 +256,7 @@ export default function AdminPanel() {
     setThumbnailUrl('');
     setProcessingProgress(0);
     setPublished(true);
-    const input = document.getElementById(
-      'portfolio-video-file'
-    ) as HTMLInputElement | null;
+    const input = document.getElementById('portfolio-video-file') as HTMLInputElement | null;
     if (input) input.value = '';
   }
 
@@ -288,14 +265,23 @@ export default function AdminPanel() {
     setEditingId(record.id);
     setTitle(record.title);
     setClient(record.client ?? '');
-    setCategory(
-      categories.includes(record.category) ? record.category : categories[0]
-    );
+    setCategory(categories.includes(record.category) ? record.category : categories[0]);
     setDescription(record.description ?? '');
     setRole(record.role ?? '');
     setAspectRatio(record.aspect_ratio || '9:16');
     setPublished(record.published);
-    setCustomThumbnailUrl(record.thumbnail_path ?? '');
+
+    // Isi customThumbnailUrl hanya bila URL http(s) eksternal dan bukan CDN TikTok yang kedaluwarsa
+    if (
+      record.thumbnail_path &&
+      /^https?:\/\//i.test(record.thumbnail_path) &&
+      !isTikTokCdnUrl(record.thumbnail_path)
+    ) {
+      setCustomThumbnailUrl(record.thumbnail_path);
+    } else {
+      setCustomThumbnailUrl('');
+    }
+
     setFile(null);
     setPreviewFile(null);
     setThumbnailFile(null);
@@ -314,48 +300,56 @@ export default function AdminPanel() {
     }
 
     setNotice(
-      `Mode Edit aktif untuk "${record.title}". Anda dapat memperbarui informasi atau thumbnail, lalu klik SIMPAN PERUBAHAN.`
+      `Mode Edit aktif untuk "${record.title}". Anda dapat memperbarui informasi atau cover, lalu klik SIMPAN PERUBAHAN.`
     );
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
-  // Sinkronisasi otomatis thumbnail TikTok untuk semua karya yang belum memiliki thumbnail
   async function syncAllTikTokThumbnails() {
     setError('');
     setNotice('');
     setSyncingThumbs(true);
 
-    let updatedCount = 0;
-    try {
-      for (const record of records) {
-        const external = decodeExternalVideo(record.file_path);
-        if (external && external.source === 'tiktok' && !record.thumbnail_path) {
-          const info = getExternalVideoInfo(external.url);
-          const thumb = await fetchTikTokThumbnailDirect(external.url, info.id);
-          if (thumb) {
-            const { error: upErr } = await supabase
-              .from('portfolio_videos')
-              .update({ thumbnail_path: thumb })
-              .eq('id', record.id);
-            if (!upErr) updatedCount += 1;
-          }
-        }
-      }
-      await refresh();
-      setNotice(
-        updatedCount > 0
-          ? `Berhasil memperbarui ${updatedCount} thumbnail video TikTok!`
-          : 'Semua video TikTok sudah memiliki thumbnail.'
-      );
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : 'Terjadi kendala saat menyinkronkan thumbnail.'
-      );
-    } finally {
+    const targets = records.filter((r) => {
+      const ext = decodeExternalVideo(r.file_path);
+      if (!ext || ext.source !== 'tiktok') return false;
+      return !r.thumbnail_path || isTikTokCdnUrl(r.thumbnail_path);
+    });
+
+    if (targets.length === 0) {
+      setNotice('Semua video TikTok sudah memiliki cover permanen.');
       setSyncingThumbs(false);
+      return;
     }
+
+    let ok = 0;
+    let fail = 0;
+
+    for (const record of targets) {
+      const ext = decodeExternalVideo(record.file_path);
+      if (!ext) continue;
+      const info = getExternalVideoInfo(ext.url);
+
+      const coverPath = await persistTikTokCover(ext.url, info.id);
+
+      if (coverPath) {
+        const { error: upErr } = await supabase
+          .from('portfolio_videos')
+          .update({ thumbnail_path: coverPath })
+          .eq('id', record.id);
+
+        if (!upErr) ok++;
+        else fail++;
+      } else {
+        fail++;
+      }
+
+      await new Promise((r) => setTimeout(r, 300));
+    }
+
+    await refresh();
+    setNotice(`Sinkronisasi selesai: ${ok} berhasil, ${fail} gagal.`);
+    setSyncingThumbs(false);
   }
 
   async function submit(e: FormEvent<HTMLFormElement>) {
@@ -367,18 +361,15 @@ export default function AdminPanel() {
       return;
     }
 
-    // Mode Edit Karya yang Sudah Ada
+    // Mode Edit Karya
     if (editingId) {
+      const existing = records.find((r) => r.id === editingId);
       let externalInfo: ReturnType<typeof getExternalVideoInfo> | null = null;
       if (source !== 'upload') {
         try {
           externalInfo = getExternalVideoInfo(sourceUrl);
           if (externalInfo.source !== source) {
-            throw new Error(
-              `Link yang dimasukkan bukan link ${
-                source === 'youtube' ? 'YouTube' : 'TikTok'
-              }.`
-            );
+            throw new Error(`Link yang dimasukkan bukan link ${source === 'youtube' ? 'YouTube' : 'TikTok'}.`);
           }
         } catch (err) {
           setError(err instanceof Error ? err.message : 'Link video tidak valid.');
@@ -403,20 +394,28 @@ export default function AdminPanel() {
         }
 
         if (source !== 'upload' && externalInfo) {
-          updatePayload.file_path = encodeExternalVideo(
-            source as ExternalVideoSource,
-            sourceUrl
-          );
+          updatePayload.file_path = encodeExternalVideo(source as ExternalVideoSource, sourceUrl);
           updatePayload.preview_path = null;
+
           if (!customThumbnailUrl.trim()) {
-            if (externalInfo.thumbnail) {
-              updatePayload.thumbnail_path = externalInfo.thumbnail;
+            if (source === 'youtube') {
+              updatePayload.thumbnail_path = externalInfo.thumbnail || null;
             } else if (source === 'tiktok') {
-              const fetched = await fetchTikTokThumbnailDirect(
-                sourceUrl,
-                externalInfo.id
-              );
-              if (fetched) updatePayload.thumbnail_path = fetched;
+              const oldExternal = existing ? decodeExternalVideo(existing.file_path) : null;
+              const oldId = oldExternal ? getExternalVideoInfo(oldExternal.url).id : '';
+
+              // Lewati fetch jika cover sudah tersimpan di storage dan ID TikTok tidak berubah
+              if (existing?.thumbnail_path?.startsWith('covers/') && oldId === externalInfo.id) {
+                updatePayload.thumbnail_path = existing.thumbnail_path;
+              } else {
+                const persisted = await persistTikTokCover(sourceUrl, externalInfo.id);
+                if (persisted) {
+                  updatePayload.thumbnail_path = persisted;
+                } else if (!existing?.thumbnail_path?.startsWith('covers/')) {
+                  updatePayload.thumbnail_path = null;
+                  setNotice('Cover belum tersimpan permanen; tampil via proxy. Jalankan backfill atau periksa Storage.');
+                }
+              }
             }
           }
         }
@@ -446,22 +445,20 @@ export default function AdminPanel() {
       setError('Pilih file MP4 dan tunggu pemrosesan preview selesai.');
       return;
     }
+
     let externalInfo: ReturnType<typeof getExternalVideoInfo> | null = null;
     if (source !== 'upload') {
       try {
         externalInfo = getExternalVideoInfo(sourceUrl);
         if (externalInfo.source !== source) {
-          throw new Error(
-            `Link yang dimasukkan bukan link ${
-              source === 'youtube' ? 'YouTube' : 'TikTok'
-            }.`
-          );
+          throw new Error(`Link yang dimasukkan bukan link ${source === 'youtube' ? 'YouTube' : 'TikTok'}.`);
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Link video tidak valid.');
         return;
       }
     }
+
     setSaving(true);
     try {
       if (source === 'upload' && file && previewFile && thumbnailFile) {
@@ -481,39 +478,43 @@ export default function AdminPanel() {
           thumbnailFile
         );
       } else if (externalInfo) {
-        let thumbToSave = customThumbnailUrl.trim() || externalInfo.thumbnail || null;
-        if (!thumbToSave && source === 'tiktok') {
-          thumbToSave = await fetchTikTokThumbnailDirect(sourceUrl, externalInfo.id);
+        let thumbToSave = customThumbnailUrl.trim() || null;
+
+        if (!thumbToSave) {
+          if (source === 'youtube') {
+            thumbToSave = externalInfo.thumbnail || null;
+          } else if (source === 'tiktok') {
+            const persisted = await persistTikTokCover(sourceUrl, externalInfo.id);
+            thumbToSave = persisted || null;
+            if (!thumbToSave) {
+              setNotice('Cover belum tersimpan permanen; tampil via proxy. Jalankan backfill atau cek policy Storage.');
+            }
+          }
         }
 
-        const { error: insertError } = await supabase
-          .from('portfolio_videos')
-          .insert({
-            title: title.trim(),
-            client: client.trim() || null,
-            category,
-            description: description.trim() || null,
-            role: role.trim() || null,
-            file_path: encodeExternalVideo(
-              source as ExternalVideoSource,
-              sourceUrl
-            ),
-            preview_path: null,
-            thumbnail_path: thumbToSave || null,
-            published,
-            aspect_ratio: aspectRatio,
-            display_order: records.length,
-          });
+        const { error: insertError } = await supabase.from('portfolio_videos').insert({
+          title: title.trim(),
+          client: client.trim() || null,
+          category,
+          description: description.trim() || null,
+          role: role.trim() || null,
+          file_path: encodeExternalVideo(source as ExternalVideoSource, sourceUrl),
+          preview_path: null,
+          thumbnail_path: thumbToSave,
+          published,
+          aspect_ratio: aspectRatio,
+          display_order: records.length,
+        });
+
         if (insertError) {
           throw new Error(`Link video gagal disimpan: ${insertError.message}`);
         }
       }
+
       resetForm();
       await refresh();
       setNotice(
-        published
-          ? 'Karya berhasil disimpan dan dipublikasikan.'
-          : 'Karya berhasil disimpan sebagai draft.'
+        published ? 'Karya berhasil disimpan dan dipublikasikan.' : 'Karya berhasil disimpan sebagai draft.'
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Gagal menyimpan karya.');
@@ -531,9 +532,7 @@ export default function AdminPanel() {
       return next;
     });
     setOrderDirty(true);
-    setNotice(
-      'Urutan berubah. Klik SIMPAN URUTAN untuk menerapkannya ke website.'
-    );
+    setNotice('Urutan berubah. Klik SIMPAN URUTAN untuk menerapkannya ke website.');
   }
 
   async function saveOrder() {
@@ -547,20 +546,14 @@ export default function AdminPanel() {
           .update({ display_order: index })
           .eq('id', records[index].id);
         if (updateError) {
-          throw new Error(
-            `Gagal menyimpan urutan video "${records[index].title}": ${updateError.message}`
-          );
+          throw new Error(`Gagal menyimpan urutan video "${records[index].title}": ${updateError.message}`);
         }
       }
-      setRecords((current) =>
-        current.map((record, index) => ({ ...record, display_order: index }))
-      );
+      setRecords((current) => current.map((record, index) => ({ ...record, display_order: index })));
       setOrderDirty(false);
       setNotice('Urutan portofolio berhasil disimpan.');
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : 'Gagal menyimpan urutan video.'
-      );
+      setError(err instanceof Error ? err.message : 'Gagal menyimpan urutan video.');
     } finally {
       setSavingOrder(false);
     }
@@ -571,12 +564,7 @@ export default function AdminPanel() {
     setError('');
     setNotice('');
     try {
-      await deletePortfolioVideo(
-        record.id,
-        record.file_path,
-        record.preview_path,
-        record.thumbnail_path
-      );
+      await deletePortfolioVideo(record.id, record.file_path, record.preview_path, record.thumbnail_path);
       if (editingId === record.id) resetForm();
       await refresh();
       setNotice('Video berhasil dihapus.');
@@ -604,11 +592,7 @@ export default function AdminPanel() {
         </a>
         <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
           {isAdmin && (
-            <button
-              type="button"
-              className="admin-back"
-              onClick={() => void logout()}
-            >
+            <button type="button" className="admin-back" onClick={() => void logout()}>
               <LogOut size={16} /> LOGOUT
             </button>
           )}
@@ -620,10 +604,7 @@ export default function AdminPanel() {
 
       <div className="admin-content">
         {!isAdmin ? (
-          <section
-            className="admin-form"
-            style={{ maxWidth: 520, margin: '50px auto' }}
-          >
+          <section className="admin-form" style={{ maxWidth: 520, margin: '50px auto' }}>
             <div className="admin-heading">
               <div>
                 <span className="admin-eyebrow">
@@ -637,11 +618,7 @@ export default function AdminPanel() {
                 <p>Login menggunakan akun admin Supabase yang sudah dibuat.</p>
               </div>
             </div>
-            {error && (
-              <div className="admin-alert error" role="alert">
-                {error}
-              </div>
-            )}
+            {error && <div className="admin-alert error" role="alert">{error}</div>}
             {notice && (
               <div className="admin-alert success" role="status">
                 <CheckCircle2 size={17} />
@@ -695,8 +672,8 @@ export default function AdminPanel() {
                   <span>VIDEO WORK.</span>
                 </h1>
                 <p>
-                  Kelola karya dari upload MP4, TikTok, maupun YouTube. Urutan 01–09
-                  otomatis tampil sebagai 9 preview utama di beranda.
+                  Kelola karya dari upload MP4, TikTok, maupun YouTube. Urutan 01–09 otomatis tampil
+                  sebagai 9 preview utama di beranda.
                 </p>
               </div>
               <div className="admin-count">
@@ -706,11 +683,7 @@ export default function AdminPanel() {
               </div>
             </div>
 
-            {error && (
-              <div className="admin-alert error" role="alert">
-                {error}
-              </div>
-            )}
+            {error && <div className="admin-alert error" role="alert">{error}</div>}
             {notice && (
               <div className="admin-alert success" role="status">
                 <CheckCircle2 size={17} />
@@ -723,21 +696,15 @@ export default function AdminPanel() {
                 <div className="admin-form-title">
                   <span className="admin-step">01</span>
                   <div style={{ flex: 1 }}>
-                    <h2>
-                      {editingId ? 'EDIT DETAIL KARYA' : 'DETAIL KARYA'}
-                    </h2>
+                    <h2>{editingId ? 'EDIT DETAIL KARYA' : 'DETAIL KARYA'}</h2>
                     <p>
                       {editingId
-                        ? 'Perbarui judul, klien, deskripsi, thumbnail, atau link karya.'
+                        ? 'Perbarui judul, klien, deskripsi, cover, atau link karya.'
                         : 'Informasi yang tampil di galeri dan mode preview.'}
                     </p>
                   </div>
                   {editingId && (
-                    <button
-                      type="button"
-                      className="admin-cancel-edit"
-                      onClick={resetForm}
-                    >
+                    <button type="button" className="admin-cancel-edit" onClick={resetForm}>
                       <X size={14} /> BATAL EDIT
                     </button>
                   )}
@@ -766,10 +733,7 @@ export default function AdminPanel() {
                   </label>
                   <label className="admin-label">
                     KATEGORI
-                    <select
-                      value={category}
-                      onChange={(e) => setCategory(e.target.value)}
-                    >
+                    <select value={category} onChange={(e) => setCategory(e.target.value)}>
                       {categories.map((c) => (
                         <option key={c}>{c}</option>
                       ))}
@@ -802,9 +766,7 @@ export default function AdminPanel() {
                   RASIO VIDEO
                   <select
                     value={aspectRatio}
-                    onChange={(e) =>
-                      setAspectRatio(e.target.value as '9:16' | '16:9' | '1:1')
-                    }
+                    onChange={(e) => setAspectRatio(e.target.value as '9:16' | '16:9' | '1:1')}
                   >
                     <option value="9:16">Vertikal — 9:16</option>
                     <option value="16:9">Horizontal — 16:9</option>
@@ -816,9 +778,7 @@ export default function AdminPanel() {
                   <span className="admin-step">02</span>
                   <div>
                     <h2>SUMBER VIDEO</h2>
-                    <p>
-                      Pilih cara menampilkan karya. Link tidak mengunggah file video ke Storage.
-                    </p>
+                    <p>Pilih cara menampilkan karya. Link tidak mengunggah file video ke Storage.</p>
                   </div>
                 </div>
 
@@ -844,15 +804,9 @@ export default function AdminPanel() {
                       aria-pressed={source === item}
                       style={{
                         padding: '12px 8px',
-                        border:
-                          source === item
-                            ? '1px solid #25F4EE'
-                            : '1px solid rgba(255,255,255,.18)',
+                        border: source === item ? '1px solid #25F4EE' : '1px solid rgba(255,255,255,.18)',
                         borderRadius: 8,
-                        background:
-                          source === item
-                            ? 'rgba(37,244,238,.10)'
-                            : 'transparent',
+                        background: source === item ? 'rgba(37,244,238,.10)' : 'transparent',
                         color: '#fff',
                         cursor: 'pointer',
                         fontWeight: 700,
@@ -868,8 +822,8 @@ export default function AdminPanel() {
                   editingId ? (
                     <div className="admin-label">
                       <small className="admin-help">
-                        File video MP4 yang sudah ter-upload tetap dipertahankan. Anda cukup
-                        mengubah informasi teks di atas lalu klik <strong>SIMPAN PERUBAHAN</strong>.
+                        File video MP4 yang sudah ter-upload tetap dipertahankan. Anda cukup mengubah
+                        informasi teks di atas lalu klik <strong>SIMPAN PERUBAHAN</strong>.
                       </small>
                     </div>
                   ) : (
@@ -881,9 +835,7 @@ export default function AdminPanel() {
                           type="file"
                           accept="video/mp4,.mp4"
                           required
-                          onChange={(e) =>
-                            void handleOriginalSelected(e.target.files?.[0] ?? null)
-                          }
+                          onChange={(e) => void handleOriginalSelected(e.target.files?.[0] ?? null)}
                         />
                         <small className="admin-help">
                           {file
@@ -894,18 +846,13 @@ export default function AdminPanel() {
                       <div className="admin-label">
                         <strong>PEMROSESAN OTOMATIS</strong>
                         <small className="admin-help">
-                          Preview MP4 dan thumbnail JPG dibuat otomatis di browser. Biarkan tab
-                          ini terbuka selama proses berlangsung.
+                          Preview MP4 dan thumbnail JPG dibuat otomatis di browser. Biarkan tab ini
+                          terbuka selama proses berlangsung.
                         </small>
                         {processingVideo && (
                           <div role="status" aria-live="polite">
-                            <LoaderCircle className="spin" size={17} /> MEMPROSES VIDEO...{' '}
-                            {processingProgress}%
-                            <progress
-                              value={processingProgress}
-                              max={100}
-                              style={{ width: '100%' }}
-                            />
+                            <LoaderCircle className="spin" size={17} /> MEMPROSES VIDEO... {processingProgress}%
+                            <progress value={processingProgress} max={100} style={{ width: '100%' }} />
                           </div>
                         )}
                         {previewUrl && (
@@ -916,12 +863,7 @@ export default function AdminPanel() {
                               controls
                               muted
                               playsInline
-                              style={{
-                                width: '100%',
-                                maxHeight: 360,
-                                background: '#000',
-                                borderRadius: 8,
-                              }}
+                              style={{ width: '100%', maxHeight: 360, background: '#000', borderRadius: 8 }}
                             />
                             {previewFile && (
                               <small className="admin-help">
@@ -970,38 +912,31 @@ export default function AdminPanel() {
                           {(() => {
                             try {
                               const info = getExternalVideoInfo(sourceUrl);
+                              const previewCover =
+                                source === 'tiktok'
+                                  ? tiktokProxyUrl(info.id, sourceUrl)
+                                  : info.thumbnail;
                               return info.source === source ? (
-                                <div
-                                  style={{
-                                    display: 'flex',
-                                    gap: 10,
-                                    alignItems: 'center',
-                                  }}
-                                >
-                                  {info.thumbnail ? (
+                                <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                                  {previewCover ? (
                                     <img
-                                      src={info.thumbnail}
+                                      src={previewCover}
                                       alt="Thumbnail video"
-                                      style={{ width: 100, borderRadius: 6 }}
+                                      referrerPolicy="no-referrer"
+                                      style={{ width: 100, height: 60, objectFit: 'cover', borderRadius: 6 }}
                                     />
                                   ) : (
                                     <Link2 size={24} />
                                   )}
                                   <small className="admin-help">
-                                    Link {source} terdeteksi dan siap disimpan.
+                                    Link {source} terdeteksi dan cover siap disimpan.
                                   </small>
                                 </div>
                               ) : (
-                                <small className="admin-help">
-                                  Pilih link {source} yang sesuai.
-                                </small>
+                                <small className="admin-help">Pilih link {source} yang sesuai.</small>
                               );
                             } catch {
-                              return (
-                                <small className="admin-help">
-                                  Masukkan link {source} yang valid.
-                                </small>
-                              );
+                              return <small className="admin-help">Masukkan link {source} yang valid.</small>;
                             }
                           })()}
                         </div>
@@ -1010,17 +945,17 @@ export default function AdminPanel() {
                   </>
                 )}
 
-                {/* Input Opsional: URL Thumbnail Custom / Langsung */}
+                {/* Input Opsional: URL Thumbnail Eksternal */}
                 <label className="admin-label" style={{ marginTop: 12 }}>
                   URL THUMBNAIL (OPSIONAL / OVERRIDE)
                   <input
                     type="url"
                     value={customThumbnailUrl}
                     onChange={(e) => setCustomThumbnailUrl(e.target.value)}
-                    placeholder="https://... (isi jika thumbnail belum muncul otomatis)"
+                    placeholder="https://... (isi hanya jika ingin menimpa gambar cover)"
                   />
                   <small className="admin-help">
-                    Bisa diisi URL gambar langsung jika thumbnail TikTok otomatis gagal termuat.
+                    Kosongkan agar cover TikTok otomatis diunduh dan disimpan permanen di Supabase Storage.
                   </small>
                 </label>
 
@@ -1043,9 +978,7 @@ export default function AdminPanel() {
                   disabled={
                     saving ||
                     processingVideo ||
-                    (!editingId &&
-                      source === 'upload' &&
-                      (!file || !previewFile || !thumbnailFile)) ||
+                    (!editingId && source === 'upload' && (!file || !previewFile || !thumbnailFile)) ||
                     (source !== 'upload' && !sourceUrl.trim())
                   }
                 >
@@ -1074,18 +1007,16 @@ export default function AdminPanel() {
                   <span>{records.length} ITEM</span>
                 </div>
                 <p className="admin-order-help">
-                  Urutan <strong>01 s/d 09 (TOP 9)</strong> otomatis tampil di halaman utama
-                  sebelum pengunjung menekan tombol <em>Lihat Semua Karya</em>. Klik ikon pensil
-                  untuk mengedit teks karya.
+                  Urutan <strong>01 s/d 09 (TOP 9)</strong> otomatis tampil di halaman utama sebelum pengunjung
+                  menekan tombol <em>Lihat Semua Karya</em>. Klik ikon pensil untuk mengedit teks karya.
                 </p>
 
-                {/* Tombol Sinkronisasi Cepat Thumbnail TikTok */}
                 <button
                   type="button"
                   className="admin-sync-thumbs-btn"
                   onClick={() => void syncAllTikTokThumbnails()}
                   disabled={syncingThumbs || records.length === 0}
-                  title="Ambil dan simpan otomatis gambar cover untuk semua video TikTok"
+                  title="Unduh dan simpan cover TikTok permanen ke Supabase Storage"
                 >
                   {syncingThumbs ? (
                     <>
@@ -1125,92 +1056,92 @@ export default function AdminPanel() {
                   </div>
                 ) : (
                   <div className="admin-records">
-                    {records.map((record, index) => (
-                      <article
-                        className={
-                          editingId === record.id
-                            ? 'admin-record is-editing'
-                            : 'admin-record'
-                        }
-                        key={record.id}
-                      >
-                        <div className="admin-order-number">
-                          {String(index + 1).padStart(2, '0')}
-                        </div>
-                        <div className="admin-record-thumb">
-                          {record.thumbnail_path ? (
-                            <img
-                              src={record.thumbnail_path}
-                              alt={record.title}
-                              referrerPolicy="no-referrer"
-                            />
-                          ) : record.file_path.startsWith('external:') ? (
-                            <Link2 size={21} />
-                          ) : (
-                            <Video size={21} />
-                          )}
-                          <span>{record.published ? 'PUBLISHED' : 'DRAFT'}</span>
-                        </div>
-                        <div className="admin-record-info">
-                          <div className="admin-record-title-row">
-                            <strong>{record.title}</strong>
-                            {index < 9 && record.published && (
-                              <span className="admin-top9-badge">TOP 9</span>
+                    {records.map((record, index) => {
+                      const ext = decodeExternalVideo(record.file_path);
+                      const isTiktok = ext?.source === 'tiktok';
+                      const tiktokId = isTiktok ? getExternalVideoInfo(ext.url).id : '';
+
+                      const coverSrc =
+                        resolveCoverUrl(record.thumbnail_path) ||
+                        (isTiktok && tiktokId ? tiktokProxyUrl(tiktokId, ext.url) : '');
+
+                      return (
+                        <article
+                          className={editingId === record.id ? 'admin-record is-editing' : 'admin-record'}
+                          key={record.id}
+                        >
+                          <div className="admin-order-number">{String(index + 1).padStart(2, '0')}</div>
+                          <div className="admin-record-thumb">
+                            {coverSrc ? (
+                              <img src={coverSrc} alt={record.title} referrerPolicy="no-referrer" />
+                            ) : ext ? (
+                              <Link2 size={21} />
+                            ) : (
+                              <Video size={21} />
                             )}
+                            <span>{record.published ? 'PUBLISHED' : 'DRAFT'}</span>
                           </div>
-                          <small>{record.client || record.category}</small>
-                          <small>
-                            {record.file_path.startsWith('external:')
-                              ? record.file_path.startsWith('external:youtube:')
-                                ? 'YOUTUBE LINK'
-                                : 'TIKTOK LINK'
-                              : 'UPLOAD MP4'}{' '}
-                            · {new Date(record.created_at).toLocaleDateString('id-ID')}
-                          </small>
-                        </div>
-                        <div className="admin-record-actions">
-                          <button
-                            type="button"
-                            className="admin-order-button"
-                            onClick={() => startEdit(record)}
-                            disabled={savingOrder}
-                            aria-label={`Edit ${record.title}`}
-                            title="Edit detail karya"
-                          >
-                            <Pencil size={14} />
-                          </button>
-                          <button
-                            type="button"
-                            className="admin-order-button"
-                            onClick={() => moveRecord(index, -1)}
-                            disabled={index === 0 || savingOrder}
-                            aria-label={`Naikkan ${record.title}`}
-                            title="Pindah ke atas"
-                          >
-                            <ChevronUp size={17} />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => moveRecord(index, 1)}
-                            className="admin-order-button"
-                            disabled={index === records.length - 1 || savingOrder}
-                            aria-label={`Turunkan ${record.title}`}
-                            title="Pindah ke bawah"
-                          >
-                            <ChevronDown size={17} />
-                          </button>
-                          <button
-                            type="button"
-                            className="admin-delete"
-                            onClick={() => void remove(record)}
-                            aria-label={`Hapus ${record.title}`}
-                            title="Hapus video"
-                          >
-                            <Trash2 size={15} />
-                          </button>
-                        </div>
-                      </article>
-                    ))}
+                          <div className="admin-record-info">
+                            <div className="admin-record-title-row">
+                              <strong>{record.title}</strong>
+                              {index < 9 && record.published && (
+                                <span className="admin-top9-badge">TOP 9</span>
+                              )}
+                            </div>
+                            <small>{record.client || record.category}</small>
+                            <small>
+                              {record.file_path.startsWith('external:')
+                                ? record.file_path.startsWith('external:youtube:')
+                                  ? 'YOUTUBE LINK'
+                                  : 'TIKTOK LINK'
+                                : 'UPLOAD MP4'}{' '}
+                              · {new Date(record.created_at).toLocaleDateString('id-ID')}
+                            </small>
+                          </div>
+                          <div className="admin-record-actions">
+                            <button
+                              type="button"
+                              className="admin-order-button"
+                              onClick={() => startEdit(record)}
+                              disabled={savingOrder}
+                              aria-label={`Edit ${record.title}`}
+                              title="Edit detail karya"
+                            >
+                              <Pencil size={14} />
+                            </button>
+                            <button
+                              type="button"
+                              className="admin-order-button"
+                              onClick={() => moveRecord(index, -1)}
+                              disabled={index === 0 || savingOrder}
+                              aria-label={`Naikkan ${record.title}`}
+                              title="Pindah ke atas"
+                            >
+                              <ChevronUp size={17} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => moveRecord(index, 1)}
+                              className="admin-order-button"
+                              disabled={index === records.length - 1 || savingOrder}
+                              aria-label={`Turunkan ${record.title}`}
+                              title="Pindah ke bawah"
+                            >
+                              <ChevronDown size={17} />
+                            </button>
+                            <button
+                              type="button"
+                              className="admin-delete"
+                              onClick={() => void remove(record)}
+                              aria-label={`Hapus ${record.title}`}
+                              title="Hapus video"
+                            >
+                              <Trash2 size={15} />
+                            </button>
+                          </div>
+                        </article>
+                      );
+                    })}
                   </div>
                 )}
 
