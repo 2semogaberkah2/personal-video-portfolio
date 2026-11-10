@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Play } from 'lucide-react';
+import { ChevronDown, ChevronUp, Play } from 'lucide-react';
 import { projects as bundledProjects, type VideoProject } from '../data/projects';
 import { getPublishedPortfolioVideos } from '../lib/portfolioVideos';
 import VideoItem from './VideoItem';
 import VideoModal from './VideoModal';
+
+const INITIAL_VISIBLE_COUNT = 9;
 
 export default function VideoFeed() {
   const [selected, setSelected] = useState<VideoProject | null>(null);
@@ -11,35 +13,9 @@ export default function VideoFeed() {
   const [remoteProjects, setRemoteProjects] = useState<VideoProject[]>([]);
   const [loadError, setLoadError] = useState('');
   const [isLoadingVideos, setIsLoadingVideos] = useState(true);
-  const [currentIndex, setCurrentIndex] = useState(0);
+  const [showAll, setShowAll] = useState(false);
 
   const closeModal = useCallback(() => setSelected(null), []);
-
-  const handleFeedScroll = useCallback(
-    (event: React.UIEvent<HTMLDivElement>) => {
-      const feed = event.currentTarget;
-      const cards = Array.from(feed.children) as HTMLElement[];
-
-      if (cards.length === 0) return;
-
-      const feedCenter = feed.scrollLeft + feed.clientWidth / 2;
-      let closestIndex = 0;
-      let closestDistance = Infinity;
-
-      cards.forEach((card, index) => {
-        const cardCenter = card.offsetLeft + card.offsetWidth / 2;
-        const distance = Math.abs(cardCenter - feedCenter);
-
-        if (distance < closestDistance) {
-          closestDistance = distance;
-          closestIndex = index;
-        }
-      });
-
-      setCurrentIndex(closestIndex);
-    },
-    []
-  );
 
   useEffect(() => {
     let alive = true;
@@ -79,6 +55,11 @@ export default function VideoFeed() {
     ),
   ];
 
+  const hasMoreProjects = visibleProjects.length > INITIAL_VISIBLE_COUNT;
+  const displayedProjects = showAll
+    ? visibleProjects
+    : visibleProjects.slice(0, INITIAL_VISIBLE_COUNT);
+
   return (
     <section className="work section-wrap" id="work">
       <div className="section-heading">
@@ -89,17 +70,14 @@ export default function VideoFeed() {
           </h2>
         </div>
         <span className="section-count">
-          {String(visibleProjects.length).padStart(2, '0')} PROJECTS
+          {String(displayedProjects.length).padStart(2, '0')} / {String(visibleProjects.length).padStart(2, '0')} PROJECTS
         </span>
       </div>
 
       {visibleProjects.length > 0 ? (
         <>
-          <div
-            className="video-grid"
-            onScroll={handleFeedScroll}
-          >
-            {visibleProjects.map((project) => (
+          <div className="video-grid">
+            {displayedProjects.map((project) => (
               <VideoItem
                 key={project.id}
                 project={project}
@@ -110,41 +88,25 @@ export default function VideoFeed() {
             ))}
           </div>
 
-          <div className="mobile-feed-navigation" aria-live="polite">
-            <span className="mobile-feed-count">
-              {currentIndex + 1} / {visibleProjects.length}
-            </span>
-
-            <div className="mobile-feed-dots" aria-label="Posisi video">
-              {visibleProjects.map((project, index) => (
-                <button
-                  key={project.id}
-                  type="button"
-                  className={
-                    index === currentIndex
-                      ? 'mobile-feed-dot is-active'
-                      : 'mobile-feed-dot'
-                  }
-                  aria-label={`Lihat video ${index + 1}: ${project.title}`}
-                  aria-current={index === currentIndex ? 'step' : undefined}
-                  onClick={() => {
-                    const feed = document.querySelector('.video-grid');
-                    const card = feed?.children[index] as HTMLElement | undefined;
-
-                    card?.scrollIntoView({
-                      behavior: 'smooth',
-                      block: 'nearest',
-                      inline: 'center',
-                    });
-                  }}
-                />
-              ))}
+          {hasMoreProjects && (
+            <div className="video-feed-more-wrap">
+              <button
+                type="button"
+                className="video-feed-more-btn"
+                onClick={() => setShowAll((prev) => !prev)}
+              >
+                {showAll ? (
+                  <>
+                    TAMPILKAN 9 KARYA UTAMA <ChevronUp size={16} />
+                  </>
+                ) : (
+                  <>
+                    LIHAT SEMUA KARYA ({visibleProjects.length} VIDEO) <ChevronDown size={16} />
+                  </>
+                )}
+              </button>
             </div>
-
-            <span className="mobile-feed-hint">
-              GESER UNTUK VIDEO LAIN <span aria-hidden="true">→</span>
-            </span>
-          </div>
+          )}
         </>
       ) : isLoadingVideos ? null : (
         <div className="empty-work">
@@ -164,7 +126,11 @@ export default function VideoFeed() {
         </div>
       )}
 
-      <VideoModal project={selected} projects={visibleProjects} onClose={closeModal} />
+      <VideoModal
+        project={selected}
+        projects={visibleProjects}
+        onClose={closeModal}
+      />
     </section>
   );
 }

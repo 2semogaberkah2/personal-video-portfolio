@@ -11,6 +11,36 @@ type PortfolioVideoRow = {
 const BUCKET = 'portfolio-videos';
 const SIGNED_URL_DURATION = 60 * 60;
 
+async function fetchTikTokOembedThumbnail(videoUrl: string, videoId: string): Promise<string> {
+  const candidates = [
+    videoUrl,
+    videoId ? `https://www.tiktok.com/@tiktok/video/${videoId}` : '',
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    try {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 3500);
+      const response = await fetch(
+        `https://www.tiktok.com/oembed?url=${encodeURIComponent(candidate)}`,
+        { signal: controller.signal }
+      );
+      window.clearTimeout(timeout);
+      if (response.ok) {
+        const data = (await response.json()) as { thumbnail_url?: string };
+        if (data && typeof data.thumbnail_url === 'string' && data.thumbnail_url) {
+          return data.thumbnail_url;
+        }
+      }
+    } catch {
+      // Lanjut ke kandidat berikutnya
+    }
+  }
+  return videoId
+    ? `/api/tiktok-thumb?id=${encodeURIComponent(videoId)}&url=${encodeURIComponent(videoUrl)}`
+    : '';
+}
+
 export async function getPublishedPortfolioVideos(): Promise<VideoProject[]> {
   const { data, error } = await supabase.from('portfolio_videos')
     .select('id, title, client, category, description, role, file_path, preview_path, thumbnail_path, published, aspect_ratio, created_at, display_order')
@@ -25,7 +55,7 @@ export async function getPublishedPortfolioVideos(): Promise<VideoProject[]> {
         const info = getExternalVideoInfo(external.url);
         let thumbnail = row.thumbnail_path || info.thumbnail;
         if (!thumbnail && external.source === 'tiktok') {
-          thumbnail = `/api/tiktok-thumb?id=${encodeURIComponent(info.id)}&url=${encodeURIComponent(external.url)}`;
+          thumbnail = await fetchTikTokOembedThumbnail(external.url, info.id);
         }
         return {
           id: row.id, title: row.title, client: row.client ?? undefined, category: row.category,
