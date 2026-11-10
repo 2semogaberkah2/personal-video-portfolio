@@ -112,22 +112,33 @@ export default function VideoItem({
   // Ambil thumbnail TikTok langsung via oEmbed jika belum ada atau gagal
   useEffect(() => {
     if (!project.tiktokVideoId) return;
-    if (project.thumbnail && ! project.thumbnail.startsWith('/api/') && !imageFailed) return;
+    if (project.thumbnail && !imageFailed) return;
     if (fallbackThumbUrl) return;
 
     let alive = true;
-    const target =
-      project.externalUrl ||
-      `https://www.tiktok.com/@tiktok/video/${project.tiktokVideoId}`;
-    fetch(`https://www.tiktok.com/oembed?url=${encodeURIComponent(target)}`)
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data: { thumbnail_url?: string } | null) => {
-        if (alive && data?.thumbnail_url) {
-          setFallbackThumbUrl(data.thumbnail_url);
-          setImageFailed(false);
+    const candidates = [
+      project.externalUrl || '',
+      `https://www.tiktok.com/@tiktok/video/${project.tiktokVideoId}`,
+    ].filter(Boolean);
+
+    (async () => {
+      for (const target of candidates) {
+        try {
+          const res = await fetch(`https://www.tiktok.com/oembed?url=${encodeURIComponent(target)}`);
+          if (res.ok) {
+            const data = (await res.json()) as { thumbnail_url?: string };
+            if (alive && data?.thumbnail_url) {
+              setFallbackThumbUrl(data.thumbnail_url);
+              setImageFailed(false);
+              return;
+            }
+          }
+        } catch {
+          // coba kandidat berikutnya
         }
-      })
-      .catch(() => {});
+      }
+    })();
+
     return () => {
       alive = false;
     };
@@ -377,12 +388,13 @@ export default function VideoItem({
               src={displayThumbnail}
               alt={`Thumbnail ${project.title}`}
               referrerPolicy="no-referrer"
+              crossOrigin="anonymous"
               onError={() => setImageFailed(true)}
               style={{
                 objectPosition: project.posterPosition ?? 'center',
               }}
             />
-          ) : tiktokStaticEmbed ? (
+          ) : isTikTok && tiktokStaticEmbed ? (
             <div className="mobile-tiktok-scaled-wrap" aria-hidden="true">
               <iframe
                 className="mobile-tiktok-scaled-iframe"

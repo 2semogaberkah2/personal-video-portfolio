@@ -15,6 +15,7 @@ import {
   ChevronDown,
   Save,
   X,
+  RefreshCw,
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { deletePortfolioVideo, uploadPortfolioVideo } from '../lib/portfolioUpload';
@@ -53,6 +54,28 @@ type VideoRecord = {
 
 const ADMIN_UID = 'a9009276-3516-466c-8a56-43ddb2d9b04a';
 
+async function fetchTikTokThumbnailDirect(url: string, id: string): Promise<string> {
+  const candidates = [
+    url.trim(),
+    id ? `https://www.tiktok.com/@tiktok/video/${id.trim()}` : '',
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    try {
+      const res = await fetch(
+        `https://www.tiktok.com/oembed?url=${encodeURIComponent(candidate)}`
+      );
+      if (res.ok) {
+        const data = (await res.json()) as { thumbnail_url?: string };
+        if (data?.thumbnail_url) return data.thumbnail_url;
+      }
+    } catch {
+      // coba kandidat berikutnya
+    }
+  }
+  return '';
+}
+
 export default function AdminPanel() {
   const [sessionReady, setSessionReady] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -61,6 +84,7 @@ export default function AdminPanel() {
   const [records, setRecords] = useState<VideoRecord[]>([]);
   const [orderDirty, setOrderDirty] = useState(false);
   const [savingOrder, setSavingOrder] = useState(false);
+  const [syncingThumbs, setSyncingThumbs] = useState(false);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [title, setTitle] = useState('');
@@ -71,6 +95,7 @@ export default function AdminPanel() {
   const [aspectRatio, setAspectRatio] = useState<'9:16' | '16:9' | '1:1'>('9:16');
   const [source, setSource] = useState<'upload' | ExternalVideoSource>('upload');
   const [sourceUrl, setSourceUrl] = useState('');
+  const [customThumbnailUrl, setCustomThumbnailUrl] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [previewFile, setPreviewFile] = useState<File | null>(null);
   const [thumbnailFile, setThumbnailFile] = useState<File | null>(null);
@@ -242,6 +267,7 @@ export default function AdminPanel() {
     setAspectRatio('9:16');
     setSource('upload');
     setSourceUrl('');
+    setCustomThumbnailUrl('');
     setFile(null);
     setPreviewFile(null);
     setThumbnailFile(null);
@@ -269,6 +295,7 @@ export default function AdminPanel() {
     setRole(record.role ?? '');
     setAspectRatio(record.aspect_ratio || '9:16');
     setPublished(record.published);
+    setCustomThumbnailUrl(record.thumbnail_path ?? '');
     setFile(null);
     setPreviewFile(null);
     setThumbnailFile(null);
@@ -286,8 +313,49 @@ export default function AdminPanel() {
       setSourceUrl('');
     }
 
-    setNotice(`Mode Edit aktif untuk "${record.title}". Ubah data di formulir lalu klik SIMPAN PERUBAHAN.`);
+    setNotice(
+      `Mode Edit aktif untuk "${record.title}". Anda dapat memperbarui informasi atau thumbnail, lalu klik SIMPAN PERUBAHAN.`
+    );
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  // Sinkronisasi otomatis thumbnail TikTok untuk semua karya yang belum memiliki thumbnail
+  async function syncAllTikTokThumbnails() {
+    setError('');
+    setNotice('');
+    setSyncingThumbs(true);
+
+    let updatedCount = 0;
+    try {
+      for (const record of records) {
+        const external = decodeExternalVideo(record.file_path);
+        if (external && external.source === 'tiktok' && !record.thumbnail_path) {
+          const info = getExternalVideoInfo(external.url);
+          const thumb = await fetchTikTokThumbnailDirect(external.url, info.id);
+          if (thumb) {
+            const { error: upErr } = await supabase
+              .from('portfolio_videos')
+              .update({ thumbnail_path: thumb })
+              .eq('id', record.id);
+            if (!upErr) updatedCount += 1;
+          }
+        }
+      }
+      await refresh();
+      setNotice(
+        updatedCount > 0
+          ? `Berhasil memperbarui ${updatedCount} thumbnail video TikTok!`
+          : 'Semua video TikTok sudah memiliki thumbnail.'
+      );
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Terjadi kendala saat menyinkronkan thumbnail.'
+      );
+    } finally {
+      setSyncingThumbs(false);
+    }
   }
 
   async function submit(e: FormEvent<HTMLFormElement>) {
@@ -330,14 +398,26 @@ export default function AdminPanel() {
           aspect_ratio: aspectRatio,
         };
 
+        if (customThumbnailUrl.trim()) {
+          updatePayload.thumbnail_path = customThumbnailUrl.trim();
+        }
+
         if (source !== 'upload' && externalInfo) {
           updatePayload.file_path = encodeExternalVideo(
             source as ExternalVideoSource,
             sourceUrl
           );
           updatePayload.preview_path = null;
-          if (externalInfo.thumbnail) {
-            updatePayload.thumbnail_path = externalInfo.thumbnail;
+          if (!customThumbnailUrl.trim()) {
+            if (externalInfo.thumbnail) {
+              updatePayload.thumbnail_path = externalInfo.thumbnail;
+            } else if (source === 'tiktok') {
+              const fetched = await fetchTikTokThumbnailDirect(
+                sourceUrl,
+                externalInfo.id
+              );
+              if (fetched) updatePayload.thumbnail_path = fetched;
+            }
           }
         }
 
@@ -401,25 +481,9 @@ export default function AdminPanel() {
           thumbnailFile
         );
       } else if (externalInfo) {
-        let thumbToSave = externalInfo.thumbnail || null;
+        let thumbToSave = customThumbnailUrl.trim() || externalInfo.thumbnail || null;
         if (!thumbToSave && source === 'tiktok') {
-          try {
-            const oembedRes = await fetch(
-              `https://www.tiktok.com/oembed?url=${encodeURIComponent(
-                sourceUrl.trim()
-              )}`
-            );
-            if (oembedRes.ok) {
-              const oembedData = (await oembedRes.json()) as {
-                thumbnail_url?: string;
-              };
-              if (oembedData?.thumbnail_url) {
-                thumbToSave = oembedData.thumbnail_url;
-              }
-            }
-          } catch {
-            // Abaikan jika gagal mengambil oEmbed saat simpan
-          }
+          thumbToSave = await fetchTikTokThumbnailDirect(sourceUrl, externalInfo.id);
         }
 
         const { error: insertError } = await supabase
@@ -435,7 +499,7 @@ export default function AdminPanel() {
               sourceUrl
             ),
             preview_path: null,
-            thumbnail_path: thumbToSave,
+            thumbnail_path: thumbToSave || null,
             published,
             aspect_ratio: aspectRatio,
             display_order: records.length,
@@ -664,7 +728,7 @@ export default function AdminPanel() {
                     </h2>
                     <p>
                       {editingId
-                        ? 'Perbarui judul, klien, deskripsi, atau link karya.'
+                        ? 'Perbarui judul, klien, deskripsi, thumbnail, atau link karya.'
                         : 'Informasi yang tampil di galeri dan mode preview.'}
                     </p>
                   </div>
@@ -946,6 +1010,20 @@ export default function AdminPanel() {
                   </>
                 )}
 
+                {/* Input Opsional: URL Thumbnail Custom / Langsung */}
+                <label className="admin-label" style={{ marginTop: 12 }}>
+                  URL THUMBNAIL (OPSIONAL / OVERRIDE)
+                  <input
+                    type="url"
+                    value={customThumbnailUrl}
+                    onChange={(e) => setCustomThumbnailUrl(e.target.value)}
+                    placeholder="https://... (isi jika thumbnail belum muncul otomatis)"
+                  />
+                  <small className="admin-help">
+                    Bisa diisi URL gambar langsung jika thumbnail TikTok otomatis gagal termuat.
+                  </small>
+                </label>
+
                 <label className="admin-publish">
                   <input
                     type="checkbox"
@@ -1001,6 +1079,25 @@ export default function AdminPanel() {
                   untuk mengedit teks karya.
                 </p>
 
+                {/* Tombol Sinkronisasi Cepat Thumbnail TikTok */}
+                <button
+                  type="button"
+                  className="admin-sync-thumbs-btn"
+                  onClick={() => void syncAllTikTokThumbnails()}
+                  disabled={syncingThumbs || records.length === 0}
+                  title="Ambil dan simpan otomatis gambar cover untuk semua video TikTok"
+                >
+                  {syncingThumbs ? (
+                    <>
+                      <LoaderCircle className="spin" size={14} /> MENYINKRONKAN THUMBNAIL...
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw size={14} /> SINKRONKAN THUMBNAIL TIKTOK OTOMATIS
+                    </>
+                  )}
+                </button>
+
                 {orderDirty && (
                   <button
                     type="button"
@@ -1041,7 +1138,13 @@ export default function AdminPanel() {
                           {String(index + 1).padStart(2, '0')}
                         </div>
                         <div className="admin-record-thumb">
-                          {record.file_path.startsWith('external:') ? (
+                          {record.thumbnail_path ? (
+                            <img
+                              src={record.thumbnail_path}
+                              alt={record.title}
+                              referrerPolicy="no-referrer"
+                            />
+                          ) : record.file_path.startsWith('external:') ? (
                             <Link2 size={21} />
                           ) : (
                             <Video size={21} />
