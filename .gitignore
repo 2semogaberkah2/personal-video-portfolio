@@ -23,3 +23,7 @@ FFMPEG-FIX-NOTES.md
 *.debug-*
 
 onal-video-portfolio
+
+# TikTok Cover Backfill artifacts
+covers-failed.json
+covers-manual/

@@ -43,6 +43,39 @@ async function uploadAsset(
   return path;
 }
 
+export async function uploadTikTokCoverFile(id: string, file: File | Blob): Promise<string> {
+  const cleanId = id.trim();
+  if (!cleanId) throw new Error('ID TikTok tidak boleh kosong.');
+
+  const type = (file.type || '').toLowerCase();
+  let ext = 'jpg';
+  if (type.includes('png')) ext = 'png';
+  else if (type.includes('webp')) ext = 'webp';
+  else if (type.includes('jpeg') || type.includes('jpg')) ext = 'jpg';
+  else {
+    throw new Error('Format cover harus JPG, PNG, atau WebP.');
+  }
+
+  if (file.size > MAX_THUMBNAIL_SIZE) {
+    throw new Error('Ukuran cover maksimal 2 MB.');
+  }
+
+  const coverPath = `covers/tiktok-${cleanId}.${ext}`;
+  const { error } = await supabase.storage
+    .from(COVER_BUCKET)
+    .upload(coverPath, file, {
+      upsert: true,
+      contentType: file.type || `image/${ext}`,
+      cacheControl: '86400',
+    });
+
+  if (error) {
+    throw new Error(`Upload cover gagal: ${error.message}`);
+  }
+
+  return coverPath;
+}
+
 export async function persistTikTokCover(url: string, id: string): Promise<string> {
   try {
     const query = new URLSearchParams({ id: id.trim() });
@@ -54,31 +87,8 @@ export async function persistTikTokCover(url: string, id: string): Promise<strin
     const contentType = res.headers.get('content-type') || 'image/jpeg';
     if (!contentType.startsWith('image/')) return '';
 
-    let ext = 'jpg';
-    if (contentType.includes('png')) ext = 'png';
-    else if (contentType.includes('webp')) ext = 'webp';
-    else if (contentType.includes('jpeg') || contentType.includes('jpg')) ext = 'jpg';
-    else return '';
-
     const blob = await res.blob();
-    if (blob.size > MAX_THUMBNAIL_SIZE) return '';
-
-    const coverPath = `covers/tiktok-${id.trim()}.${ext}`;
-
-    const { error: uploadError } = await supabase.storage
-      .from(COVER_BUCKET)
-      .upload(coverPath, blob, {
-        upsert: true,
-        contentType,
-        cacheControl: '86400',
-      });
-
-    if (uploadError) {
-      console.warn('Upload cover TikTok ke storage gagal:', uploadError.message);
-      return '';
-    }
-
-    return coverPath;
+    return await uploadTikTokCoverFile(id, blob);
   } catch (err) {
     console.warn('persistTikTokCover error:', err);
     return '';
@@ -111,72 +121,50 @@ export async function uploadPortfolioVideo(
     throw new Error('Ukuran video preview maksimal 15 MB.');
   }
 
-  if (
-    thumbnailFile &&
-    !['image/jpeg', 'image/jpg'].includes(thumbnailFile.type) &&
-    !thumbnailFile.name.toLowerCase().match(/\.jpe?g$/)
-  ) {
-    throw new Error('Thumbnail harus berformat JPG atau JPEG.');
-  }
-
   if (thumbnailFile && thumbnailFile.size > MAX_THUMBNAIL_SIZE) {
     throw new Error('Ukuran thumbnail maksimal 2 MB.');
   }
 
   const {
     data: { user },
-    error: userError,
   } = await supabase.auth.getUser();
 
-  if (userError || !user) {
-    throw new Error('Sesi admin tidak ditemukan. Silakan login kembali.');
+  if (!user) {
+    throw new Error('Sesi admin tidak ditemukan. Silakan login ulang.');
   }
 
-  const uploadedPaths: string[] = [];
+  const originalPath = await uploadAsset(user.id, file, 'video/mp4');
 
-  try {
-    const filePath = await uploadAsset(user.id, file, 'video/mp4');
-    uploadedPaths.push(filePath);
+  let previewPath: string | null = null;
+  if (previewFile) {
+    previewPath = await uploadAsset(user.id, previewFile, 'video/mp4');
+  }
 
-    let previewPath: string | null = null;
-    let thumbnailPath: string | null = null;
+  let thumbnailPath: string | null = null;
+  if (thumbnailFile) {
+    thumbnailPath = await uploadAsset(
+      user.id,
+      thumbnailFile,
+      thumbnailFile.type || 'image/jpeg'
+    );
+  }
 
-    if (previewFile) {
-      previewPath = await uploadAsset(user.id, previewFile, 'video/mp4');
-      uploadedPaths.push(previewPath);
-    }
+  const { error: insertError } = await supabase.from('portfolio_videos').insert({
+    title: details.title.trim(),
+    client: details.client.trim() || null,
+    category: details.category.trim(),
+    description: details.description.trim() || null,
+    role: details.role.trim() || null,
+    file_path: originalPath,
+    preview_path: previewPath,
+    thumbnail_path: thumbnailPath,
+    published: details.published,
+    aspect_ratio: details.aspectRatio,
+    display_order: details.displayOrder,
+  });
 
-    if (thumbnailFile) {
-      thumbnailPath = await uploadAsset(user.id, thumbnailFile, 'image/jpeg');
-      uploadedPaths.push(thumbnailPath);
-    }
-
-    const { error: insertError } = await supabase.from('portfolio_videos').insert({
-      title: details.title.trim(),
-      client: details.client.trim() || null,
-      category: details.category,
-      description: details.description.trim() || null,
-      role: details.role.trim() || null,
-      file_path: filePath,
-      preview_path: previewPath,
-      thumbnail_path: thumbnailPath,
-      published: details.published,
-      aspect_ratio: details.aspectRatio,
-      display_order: details.displayOrder,
-    });
-
-    if (insertError) {
-      throw new Error(`Data video gagal disimpan: ${insertError.message}`);
-    }
-  } catch (error) {
-    if (uploadedPaths.length > 0) {
-      const { error: cleanupError } = await supabase.storage.from(BUCKET).remove(uploadedPaths);
-      if (cleanupError) {
-        console.error('Pembersihan file gagal:', cleanupError.message);
-      }
-    }
-
-    throw error;
+  if (insertError) {
+    throw new Error(`Data video gagal disimpan: ${insertError.message}`);
   }
 }
 
@@ -188,37 +176,18 @@ export async function deletePortfolioVideo(
 ): Promise<void> {
   const isExternal = Boolean(decodeExternalVideo(filePath));
 
-  // Jika thumbnail berada di bucket publik portfolio-covers, hapus objeknya
-  if (thumbnailPath?.startsWith('covers/')) {
-    await supabase.storage
-      .from(COVER_BUCKET)
-      .remove([thumbnailPath])
-      .catch((err: unknown) => {
-        console.warn('Gagal menghapus cover dari portfolio-covers:', err);
-      });
-  }
-
-  const { error: databaseError } = await supabase
-    .from('portfolio_videos')
-    .delete()
-    .eq('id', id);
-
-  if (databaseError) {
-    throw new Error(`Data video gagal dihapus: ${databaseError.message}`);
-  }
-
-  if (isExternal) return;
-
-  const paths = [filePath, previewPath, thumbnailPath].filter(
-    (path): path is string => Boolean(path && !path.startsWith('covers/'))
-  );
-
-  if (paths.length > 0) {
-    const { error: storageError } = await supabase.storage.from(BUCKET).remove(paths);
-    if (storageError) {
-      throw new Error(
-        `Data video sudah dihapus, tetapi sebagian file Storage mungkin masih tersisa: ${storageError.message}`
-      );
+  if (!isExternal && filePath) {
+    const toRemove = [filePath, previewPath, thumbnailPath].filter(Boolean) as string[];
+    if (toRemove.length > 0) {
+      await supabase.storage.from(BUCKET).remove(toRemove);
     }
+  } else if (isExternal && thumbnailPath && thumbnailPath.startsWith('covers/')) {
+    // Hapus cover TikTok dari bucket portfolio-covers
+    await supabase.storage.from(COVER_BUCKET).remove([thumbnailPath]);
+  }
+
+  const { error } = await supabase.from('portfolio_videos').delete().eq('id', id);
+  if (error) {
+    throw new Error(`Gagal menghapus video: ${error.message}`);
   }
 }

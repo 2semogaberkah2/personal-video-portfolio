@@ -22,6 +22,7 @@ import {
   deletePortfolioVideo,
   persistTikTokCover,
   uploadPortfolioVideo,
+  uploadTikTokCoverFile,
 } from '../lib/portfolioUpload';
 import { processVideo } from '../lib/videoProcessor';
 import {
@@ -79,6 +80,9 @@ export default function AdminPanel() {
   const [source, setSource] = useState<'upload' | ExternalVideoSource>('upload');
   const [sourceUrl, setSourceUrl] = useState('');
   const [customThumbnailUrl, setCustomThumbnailUrl] = useState('');
+  const [manualCoverFile, setManualCoverFile] = useState<File | null>(null);
+  const [manualCoverPreview, setManualCoverPreview] = useState<string>('');
+  const [extractingFrame, setExtractingFrame] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [previewFile, setPreviewFile] = useState<File | null>(null);
   const [thumbnailFile, setThumbnailFile] = useState<File | null>(null);
@@ -236,6 +240,22 @@ export default function AdminPanel() {
     }
   }
 
+  async function handleExtractFrameFromLocalVideo(videoFile: File) {
+    setExtractingFrame(true);
+    setError('');
+    try {
+      const result = await processVideo(videoFile);
+      const thumbFile = new File([result.thumbnail], `frame-${Date.now()}.jpg`, { type: 'image/jpeg' });
+      setManualCoverFile(thumbFile);
+      setManualCoverPreview(URL.createObjectURL(thumbFile));
+      setNotice('✓ Frame berhasil diekstrak dari MP4 lokal! Klik simpan untuk mengunggahnya.');
+    } catch (err) {
+      setError(`Ekstraksi frame gagal: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setExtractingFrame(false);
+    }
+  }
+
   function resetForm() {
     setEditingId(null);
     setTitle('');
@@ -247,6 +267,12 @@ export default function AdminPanel() {
     setSource('upload');
     setSourceUrl('');
     setCustomThumbnailUrl('');
+    setManualCoverFile(null);
+    if (manualCoverPreview) URL.revokeObjectURL(manualCoverPreview);
+    setManualCoverPreview('');
+    setManualCoverFile(null);
+    if (manualCoverPreview) URL.revokeObjectURL(manualCoverPreview);
+    setManualCoverPreview('');
     setFile(null);
     setPreviewFile(null);
     setThumbnailFile(null);
@@ -389,7 +415,16 @@ export default function AdminPanel() {
           aspect_ratio: aspectRatio,
         };
 
-        if (customThumbnailUrl.trim()) {
+        if (manualCoverFile && externalInfo?.source === 'tiktok') {
+          try {
+            const uploaded = await uploadTikTokCoverFile(externalInfo.id, manualCoverFile);
+            updatePayload.thumbnail_path = uploaded;
+          } catch (uploadErr) {
+            setError(`Upload cover manual gagal: ${uploadErr instanceof Error ? uploadErr.message : String(uploadErr)}`);
+            setSaving(false);
+            return;
+          }
+        } else if (customThumbnailUrl.trim()) {
           updatePayload.thumbnail_path = customThumbnailUrl.trim();
         }
 
@@ -480,7 +515,16 @@ export default function AdminPanel() {
       } else if (externalInfo) {
         let thumbToSave = customThumbnailUrl.trim() || null;
 
-        if (!thumbToSave) {
+        if (manualCoverFile && externalInfo.source === 'tiktok') {
+          try {
+            const uploaded = await uploadTikTokCoverFile(externalInfo.id, manualCoverFile);
+            thumbToSave = uploaded;
+          } catch (uploadErr) {
+            setError(`Upload cover manual gagal: ${uploadErr instanceof Error ? uploadErr.message : String(uploadErr)}`);
+            setSaving(false);
+            return;
+          }
+        } else if (!thumbToSave) {
           if (source === 'youtube') {
             thumbToSave = externalInfo.thumbnail || null;
           } else if (source === 'tiktok') {
@@ -945,6 +989,88 @@ export default function AdminPanel() {
                   </>
                 )}
 
+                {/* Input Cover Manual & Ekstraksi Frame MP4 */}
+                {source === 'tiktok' && (
+                  <div
+                    className="admin-manual-cover-box"
+                    style={{
+                      marginTop: 12,
+                      padding: '12px 14px',
+                      background: '#131313',
+                      border: '1px solid #292929',
+                      borderRadius: 4,
+                    }}
+                  >
+                    <label className="admin-label" style={{ marginBottom: 8 }}>
+                      PILIH GAMBAR COVER MANUAL (JPG / PNG / WEBP)
+                      <input
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp"
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          if (f) {
+                            setManualCoverFile(f);
+                            setManualCoverPreview(URL.createObjectURL(f));
+                          }
+                        }}
+                      />
+                      <small className="admin-help">
+                        Upload file cover mandiri jika ekstraksi otomatis dari TikTok gagal atau ingin menggunakan foto kustom.
+                      </small>
+                    </label>
+
+                    <div style={{ marginTop: 10, display: 'flex', gap: 10, alignItems: 'center' }}>
+                      <input
+                        type="file"
+                        id="admin-extract-frame-input"
+                        accept="video/mp4"
+                        style={{ display: 'none' }}
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          if (f) void handleExtractFrameFromLocalVideo(f);
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="admin-secondary-btn"
+                        onClick={() => document.getElementById('admin-extract-frame-input')?.click()}
+                        disabled={extractingFrame}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 6,
+                          padding: '8px 12px',
+                          fontSize: '9.5px',
+                          background: '#222',
+                          color: '#fff',
+                          border: '1px solid #444',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {extractingFrame ? <LoaderCircle className="spin" size={14} /> : <Film size={14} />}
+                        AMBIL FRAME DARI MP4 LOKAL
+                      </button>
+
+                      {manualCoverPreview && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <img
+                            src={manualCoverPreview}
+                            alt="Preview cover manual"
+                            style={{
+                              width: 36,
+                              height: 36,
+                              objectFit: 'cover',
+                              borderRadius: 4,
+                              border: '1px solid var(--cyan)',
+                            }}
+                          />
+                          <small style={{ fontSize: '9px', color: 'var(--cyan)' }}>Cover dipilih</small>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 {/* Input Opsional: URL Thumbnail Eksternal */}
                 <label className="admin-label" style={{ marginTop: 12 }}>
                   URL THUMBNAIL (OPSIONAL / OVERRIDE)
@@ -1086,6 +1212,9 @@ export default function AdminPanel() {
                               <strong>{record.title}</strong>
                               {index < 9 && record.published && (
                                 <span className="admin-top9-badge">TOP 9</span>
+                              )}
+                              {isTiktok && (!record.thumbnail_path || !record.thumbnail_path.startsWith('covers/')) && (
+                                <span className="admin-nocover-badge">COVER BELUM ADA</span>
                               )}
                             </div>
                             <small>{record.client || record.category}</small>

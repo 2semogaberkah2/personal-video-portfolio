@@ -23,27 +23,23 @@ CREATE POLICY "Public Access to portfolio-covers"
 ON storage.objects FOR SELECT
 USING (bucket_id = 'portfolio-covers');
 
--- 3. Kebijakan Akses: Hanya admin yang dapat mengunggah cover baru
+-- 3. Kebijakan Akses: Upload cover baru (Publik / Anon & Admin)
 DROP POLICY IF EXISTS "Admin Upload to portfolio-covers" ON storage.objects;
-CREATE POLICY "Admin Upload to portfolio-covers"
+DROP POLICY IF EXISTS "Allow Upload to portfolio-covers" ON storage.objects;
+CREATE POLICY "Allow Upload to portfolio-covers"
 ON storage.objects FOR INSERT
-TO authenticated
-WITH CHECK (
-  bucket_id = 'portfolio-covers'
-  AND auth.uid() = 'a9009276-3516-466c-8a56-43ddb2d9b04a'
-);
+TO public
+WITH CHECK (bucket_id = 'portfolio-covers');
 
--- 4. Kebijakan Akses: Hanya admin yang dapat memperbarui cover
+-- 4. Kebijakan Akses: Perbarui cover
 DROP POLICY IF EXISTS "Admin Update portfolio-covers" ON storage.objects;
-CREATE POLICY "Admin Update portfolio-covers"
+DROP POLICY IF EXISTS "Allow Update portfolio-covers" ON storage.objects;
+CREATE POLICY "Allow Update portfolio-covers"
 ON storage.objects FOR UPDATE
-TO authenticated
-USING (
-  bucket_id = 'portfolio-covers'
-  AND auth.uid() = 'a9009276-3516-466c-8a56-43ddb2d9b04a'
-);
+TO public
+USING (bucket_id = 'portfolio-covers');
 
--- 5. Kebijakan Akses: Hanya admin yang dapat menghapus cover
+-- 5. Kebijakan Akses: Hapus cover (Admin)
 DROP POLICY IF EXISTS "Admin Delete from portfolio-covers" ON storage.objects;
 CREATE POLICY "Admin Delete from portfolio-covers"
 ON storage.objects FOR DELETE

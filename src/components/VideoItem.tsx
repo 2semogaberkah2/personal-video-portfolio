@@ -1,33 +1,52 @@
-import { useEffect, useRef, useState } from 'react';
-import { ArrowUpRight, Play, Volume2, VolumeX } from 'lucide-react';
+import { useState, useRef, useEffect, useMemo } from 'react';
+import { ArrowUpRight, Volume2, VolumeX, Play } from 'lucide-react';
 import type { VideoProject } from '../data/projects';
+import { CoverImage } from './CoverImage';
+import { buildCoverCandidates } from '../lib/cover';
 
-type Props = {
+export type VideoItemProps = {
   project: VideoProject;
-  index?: number;
-  onOpen: (project: VideoProject) => void;
-  onPreview: (id: string | null) => void;
   activePreview: string | null;
+  onPreview: (id: string | null) => void;
+  onOpen: (project: VideoProject) => void;
+  index: number;
 };
 
-function sendTikTokCommand(iframe: HTMLIFrameElement | null, type: string, value?: unknown) {
-  if (!iframe?.contentWindow) return;
-  iframe.contentWindow.postMessage({ 'x-tiktok-player': true, type, value }, '*');
+function sendYouTubeCommand(iframe: HTMLIFrameElement | null, command: string, args: unknown[] = []) {
+  if (!iframe || !iframe.contentWindow) return;
+  try {
+    iframe.contentWindow.postMessage(
+      JSON.stringify({ event: 'command', func: command, args }),
+      '*'
+    );
+  } catch {
+    // Ignore cross-origin issues
+  }
 }
 
-function sendYouTubeCommand(iframe: HTMLIFrameElement | null, func: string) {
-  if (!iframe?.contentWindow) return;
-  iframe.contentWindow.postMessage(JSON.stringify({ event: 'command', func, args: [] }), '*');
+function sendTikTokCommand(iframe: HTMLIFrameElement | null, action: string, value?: unknown) {
+  if (!iframe || !iframe.contentWindow) return;
+  try {
+    iframe.contentWindow.postMessage(
+      {
+        'x-tiktok-player': true,
+        type: action,
+        value,
+      },
+      '*'
+    );
+  } catch {
+    // Ignore cross-origin issues
+  }
 }
 
-export default function VideoItem({
+export function VideoItem({
   project,
-  index = 0,
-  onOpen,
-  onPreview,
   activePreview,
-}: Props) {
-  const [candidateIndex, setCandidateIndex] = useState(0);
+  onPreview,
+  onOpen,
+  index,
+}: VideoItemProps) {
   const [touchDevice, setTouchDevice] = useState(false);
   const [isMobileViewport, setIsMobileViewport] = useState(false);
   const [isMuted, setIsMuted] = useState(true);
@@ -64,15 +83,21 @@ export default function VideoItem({
   const isActive = activePreview === project.id;
   const canLive = !touchDevice && !isMobileViewport && isActive && (isMp4 || isTikTok || isYouTube);
 
-  const candidates = [project.thumbnail, ...(project.thumbnailFallbacks ?? [])].filter(
-    (c): c is string => Boolean(c && c.trim())
-  );
-  const currentCover = candidates[candidateIndex] || '';
-
-  // Reset indeks kandidat gambar bila id atau thumbnail berubah
-  useEffect(() => {
-    setCandidateIndex(0);
-  }, [project.id, project.thumbnail]);
+  const candidates = useMemo(() => {
+    return buildCoverCandidates({
+      thumbnailPath: project.thumbnail,
+      tiktokId: project.tiktokVideoId,
+      tiktokUrl: project.fullVideo,
+      youtubeId: project.youtubeVideoId,
+      customThumbnails: project.thumbnailFallbacks,
+    });
+  }, [
+    project.thumbnail,
+    project.tiktokVideoId,
+    project.fullVideo,
+    project.youtubeVideoId,
+    project.thumbnailFallbacks,
+  ]);
 
   useEffect(() => {
     isMutedRef.current = isMuted;
@@ -130,7 +155,6 @@ export default function VideoItem({
 
     window.addEventListener('message', handleMessage);
 
-    // Fallback timer bila onPlayerReady tidak diterima
     const fallbackTimer = window.setTimeout(() => {
       sendTikTokCommand(iframeRef.current, isMutedRef.current ? 'mute' : 'unMute');
       sendTikTokCommand(iframeRef.current, 'play');
@@ -143,40 +167,17 @@ export default function VideoItem({
     };
   }, [mountLive, isTikTok]);
 
-  // Kontrol audio mute/unmute
-  useEffect(() => {
-    if (isMp4 && videoRef.current) {
-      videoRef.current.muted = isMuted;
-    } else if (isTikTok && iframeRef.current) {
-      sendTikTokCommand(iframeRef.current, isMuted ? 'mute' : 'unMute');
-    } else if (isYouTube && iframeRef.current) {
-      sendYouTubeCommand(iframeRef.current, isMuted ? 'mute' : 'unMute');
-    }
-  }, [isMuted, isMp4, isTikTok, isYouTube]);
-
-  // Reset mute ke default true saat kursor keluar
-  useEffect(() => {
-    if (!isActive) {
-      setIsMuted(true);
-    }
-  }, [isActive]);
-
-  const toggleMute = (event: React.MouseEvent<HTMLButtonElement>) => {
+  const toggleMute = (event: React.MouseEvent) => {
     event.stopPropagation();
     const nextMuted = !isMuted;
     setIsMuted(nextMuted);
 
     if (isMp4 && videoRef.current) {
       videoRef.current.muted = nextMuted;
-      if (!nextMuted && videoRef.current.paused) {
-        videoRef.current.play().catch(() => {});
-      }
-    } else if (isTikTok && iframeRef.current) {
-      sendTikTokCommand(iframeRef.current, nextMuted ? 'mute' : 'unMute');
-      sendTikTokCommand(iframeRef.current, 'play');
     } else if (isYouTube && iframeRef.current) {
       sendYouTubeCommand(iframeRef.current, nextMuted ? 'mute' : 'unMute');
-      sendYouTubeCommand(iframeRef.current, 'playVideo');
+    } else if (isTikTok && iframeRef.current) {
+      sendTikTokCommand(iframeRef.current, nextMuted ? 'mute' : 'unMute');
     }
   };
 
@@ -224,38 +225,17 @@ export default function VideoItem({
           aria-label={`Buka video ${project.title}`}
         >
           {/* Layer 1 (Dasar): Cover Gambar Murni (Tidak pernah live iframe di touch/mobile) */}
-          {currentCover ? (
-            <img
-              className="video-poster"
-              src={currentCover}
-              alt={`Thumbnail ${project.title}`}
-              referrerPolicy="no-referrer"
-              decoding="async"
-              loading={index < 6 ? 'eager' : 'lazy'}
-              onError={() => setCandidateIndex((prev) => prev + 1)}
-              style={{ objectPosition: project.posterPosition ?? 'center' }}
-            />
-          ) : isMp4 && previewUrl ? (
-            /* Last resort bila thumbnail MP4 kosong */
-            <video
-              className="video-poster"
-              src={`${previewUrl}#t=0.1`}
-              muted
-              playsInline
-              preload="metadata"
-              style={{ width: '100%', height: '100%', objectFit: 'cover', pointerEvents: 'none' }}
-            />
-          ) : (
-            <div className="asset-placeholder">
-              <span className="placeholder-icon">
-                <Play size={18} />
-              </span>
-              <span>{project.title}</span>
-              <small>{project.client ?? project.category ?? 'VIDEO'}</small>
-            </div>
-          )}
+          <CoverImage
+            candidates={candidates}
+            id={project.id}
+            title={project.title}
+            subtitle={project.client || undefined}
+            category={project.category}
+            priority={index < 3}
+            objectPosition={project.posterPosition ?? 'center'}
+          />
 
-          {/* Layer 2: Live Player Desktop (Mount hanya setelah hover-intent 250ms) */}
+          {/* Layer 2: Live Player Desktop (Mount hanya setelah hover-intent 250ms pada pointer/mouse) */}
           {mountLive && (
             <>
               {isMp4 && previewUrl && (
@@ -360,9 +340,9 @@ export default function VideoItem({
       <div className="video-meta">
         <div className="video-meta-text">
           <h3>{project.title}</h3>
-          <p>{project.client ?? 'Independent project'}</p>
+          {project.client && <p>{project.client}</p>}
         </div>
-        <span className="project-category">{project.category ?? 'VIDEO'}</span>
+        <span className="project-category">{project.category}</span>
       </div>
     </article>
   );

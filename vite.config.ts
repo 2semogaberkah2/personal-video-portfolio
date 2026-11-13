@@ -25,13 +25,35 @@ export default defineConfig({
             )) as {
               fetchTikTokCover: (
                 id: string,
-                url?: string
-              ) => Promise<{ buffer: Buffer; contentType: string } | null>;
+                url?: string,
+                opts?: {
+                  tiers?: string[];
+                  allowThirdParty?: boolean;
+                  deadlineMs?: number;
+                }
+              ) => Promise<
+                | {
+                    ok: true;
+                    buffer: Buffer;
+                    contentType: string;
+                    ext: string;
+                    tier: string;
+                    sourceUrl: string;
+                  }
+                | {
+                    ok: false;
+                    attempts: Array<{ tier: string; status: number; reason: string }>;
+                  }
+              >;
             };
 
-            const result = await fetchTikTokCover(id, url);
+            const result = await fetchTikTokCover(id.trim(), url || undefined, {
+              tiers: ['rehydration', 'meta', 'oembed', 'embedv2'],
+              allowThirdParty: false,
+              deadlineMs: 8000,
+            });
 
-            if (!result || !result.buffer) {
+            if (!result || !result.ok || !result.buffer) {
               res.statusCode = 404;
               res.setHeader('Cache-Control', 'public, max-age=0, s-maxage=300');
               res.end('Cover not found');
@@ -40,6 +62,7 @@ export default defineConfig({
 
             res.statusCode = 200;
             res.setHeader('Content-Type', result.contentType);
+            res.setHeader('X-Cover-Tier', result.tier || 'unknown');
             res.setHeader(
               'Cache-Control',
               'public, max-age=86400, s-maxage=2592000, stale-while-revalidate=604800'
