@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Play } from 'lucide-react';
 import { coverHue } from '../lib/cover';
 
@@ -24,18 +24,20 @@ export function CoverImage({
   showPlayIcon = false,
 }: CoverImageProps) {
   const [candidateIdx, setCandidateIdx] = useState(0);
-  const [isLoaded, setIsLoaded] = useState(false);
 
   const cleanCandidates = candidates
     .map((c) => (c || '').trim())
     .filter((c) => Boolean(c) && (/^https?:\/\//i.test(c) || c.startsWith('/')));
 
   const candidateKey = `${id}::${cleanCandidates.join('|')}`;
+  const prevKeyRef = useRef(candidateKey);
 
   useEffect(() => {
-    setCandidateIdx(0);
-    setIsLoaded(false);
-  }, [candidateKey, id]);
+    if (prevKeyRef.current !== candidateKey) {
+      prevKeyRef.current = candidateKey;
+      setCandidateIdx(0);
+    }
+  }, [candidateKey]);
 
   const currentSrc = cleanCandidates[candidateIdx] || '';
   const hasExhausted = candidateIdx >= cleanCandidates.length;
@@ -65,11 +67,11 @@ export function CoverImage({
         )}
       </div>
 
-      {/* Layer 1 (L1): Gambar Thumbnail Asli */}
+      {/* Layer 1 (L1): Gambar Thumbnail Asli langsung terlihat tanpa terperangkap opacity:0 */}
       {!hasExhausted && currentSrc ? (
         <img
           key={currentSrc}
-          className={isLoaded ? 'cover-img is-loaded' : 'cover-img'}
+          className="cover-img is-loaded"
           src={currentSrc}
           alt={`Cover ${title}`}
           referrerPolicy="no-referrer"
@@ -77,9 +79,7 @@ export function CoverImage({
           loading={priority ? 'eager' : 'lazy'}
           style={{ objectPosition }}
           onLoad={(e) => {
-            if (e.currentTarget.naturalWidth > 1) {
-              setIsLoaded(true);
-            } else {
+            if (e.currentTarget.naturalWidth <= 1) {
               setCandidateIdx((prev) => prev + 1);
             }
           }}
