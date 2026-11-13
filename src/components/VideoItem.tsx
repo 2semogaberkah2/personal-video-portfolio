@@ -72,7 +72,7 @@ export function VideoItem({
     'controls=0&progress_bar=0&play_button=0&volume_control=0&fullscreen_button=0&timestamp=0&music_info=0&description=0&loop=1&rel=0&native_context_menu=0&closed_caption=0';
 
   const tiktokHoverEmbed = project.tiktokVideoId
-    ? `https://www.tiktok.com/player/v1/${project.tiktokVideoId}?autoplay=1&muted=1&${cleanTikTokParams}`
+    ? `https://www.tiktok.com/player/v1/${project.tiktokVideoId}?autoplay=1&${cleanTikTokParams}`
     : null;
 
   const youtubeHoverEmbed = project.youtubeVideoId
@@ -80,7 +80,6 @@ export function VideoItem({
     : null;
 
   const isActive = activePreview === project.id;
-  // Di laptop (>600px), izinkan live hover preview baik dengan mouse maupun laptop touchscreen
   const canLive = !isMobileViewport && isActive && (isMp4 || isTikTok || isYouTube);
 
   const candidates = useMemo(() => {
@@ -117,7 +116,7 @@ export function VideoItem({
     };
   }, []);
 
-  // Hover-intent singkat (120ms) sebelum me-mount layer live desktop
+  // Hover-intent 180ms sebelum me-mount layer live desktop
   useEffect(() => {
     if (!canLive) {
       setMountLive(false);
@@ -127,14 +126,14 @@ export function VideoItem({
 
     const timer = window.setTimeout(() => {
       setMountLive(true);
-    }, 120);
+    }, 180);
 
     return () => {
       window.clearTimeout(timer);
     };
   }, [canLive]);
 
-  // Handler TikTok message & command trigger saat live layer desktop aktif
+  // Handler TikTok message listener saat live layer desktop aktif
   useEffect(() => {
     if (!mountLive || !isTikTok) return;
 
@@ -154,13 +153,11 @@ export function VideoItem({
 
     window.addEventListener('message', handleMessage);
 
-    const t1 = window.setTimeout(triggerPlayback, 350);
-    const t2 = window.setTimeout(triggerPlayback, 900);
+    const fallbackTimer = window.setTimeout(triggerPlayback, 1100);
 
     return () => {
       window.removeEventListener('message', handleMessage);
-      window.clearTimeout(t1);
-      window.clearTimeout(t2);
+      window.clearTimeout(fallbackTimer);
     };
   }, [mountLive, isTikTok]);
 
@@ -220,7 +217,7 @@ export function VideoItem({
           }}
           aria-label={`Buka video ${project.title}`}
         >
-          {/* Layer 1 (Dasar): Cover Gambar Murni (Tidak pernah live iframe di mobile) */}
+          {/* Layer 1 (Dasar): Cover Gambar Murni (tanpa ikon play ganda) */}
           <CoverImage
             candidates={candidates}
             id={project.id}
@@ -229,6 +226,7 @@ export function VideoItem({
             category={project.category}
             priority={index < 3}
             objectPosition={project.posterPosition ?? 'center'}
+            showPlayIcon={false}
           />
 
           {/* Layer 2: Live Player Desktop (Mount saat di-hover di laptop) */}
@@ -244,7 +242,6 @@ export function VideoItem({
                   playsInline
                   autoPlay
                   preload="auto"
-                  onLoadedData={() => setLiveReady(true)}
                   onPlaying={() => setLiveReady(true)}
                   style={{
                     position: 'absolute',
@@ -267,11 +264,6 @@ export function VideoItem({
                   allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
                   referrerPolicy="strict-origin-when-cross-origin"
                   tabIndex={-1}
-                  onLoad={() => {
-                    setLiveReady(true);
-                    sendTikTokCommand(iframeRef.current, isMutedRef.current ? 'mute' : 'unMute');
-                    sendTikTokCommand(iframeRef.current, 'play');
-                  }}
                   style={{
                     position: 'absolute',
                     inset: 0,
@@ -294,9 +286,9 @@ export function VideoItem({
                   referrerPolicy="strict-origin-when-cross-origin"
                   tabIndex={-1}
                   onLoad={() => {
-                    setLiveReady(true);
                     sendYouTubeCommand(iframeRef.current, isMutedRef.current ? 'mute' : 'unMute');
                     sendYouTubeCommand(iframeRef.current, 'playVideo');
+                    setLiveReady(true);
                   }}
                   style={{
                     position: 'absolute',
@@ -325,7 +317,7 @@ export function VideoItem({
             </button>
           )}
 
-          {/* Overlay Play Icon tampil selama live layer belum aktif */}
+          {/* Satu-satunya Overlay Play Icon saat live layer belum aktif */}
           {!liveReady && (
             <span className="video-play-overlay" aria-hidden="true">
               <Play size={isMobileViewport ? 16 : 22} fill="currentColor" />

@@ -46,16 +46,12 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
 
   const [settledIndex, setSettledIndex] = useState(0);
   const [isMuted, setIsMuted] = useState(true);
-  const [playerReady, setPlayerReady] = useState(false);
 
   const settledIndexRef = useRef(0);
   settledIndexRef.current = settledIndex;
 
   const isMutedRef = useRef(true);
   isMutedRef.current = isMuted;
-
-  const playerReadyRef = useRef(false);
-  playerReadyRef.current = playerReady;
 
   const feedProjects = projects.length ? projects : project ? [project] : [];
   const initialIndex = Math.max(
@@ -67,7 +63,6 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
   const goTo = useCallback(
     (index: number) => {
       const safeIndex = Math.max(0, Math.min(index, feedProjects.length - 1));
-      setPlayerReady(false);
       setSettledIndex(safeIndex);
       slideRefs.current[safeIndex]?.scrollIntoView({
         behavior: 'smooth',
@@ -88,7 +83,6 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
   useEffect(() => {
     if (!project) return;
     setIsMuted(true);
-    setPlayerReady(false);
     previousFocus.current = document.activeElement as HTMLElement;
     const oldOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
@@ -152,13 +146,7 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
           if (debounceTimer) window.clearTimeout(debounceTimer);
 
           debounceTimer = window.setTimeout(() => {
-            setSettledIndex((current) => {
-              if (current !== candidateIndex) {
-                setPlayerReady(false);
-                return candidateIndex;
-              }
-              return current;
-            });
+            setSettledIndex((current) => (current !== candidateIndex ? candidateIndex : current));
           }, 150);
         }
       },
@@ -189,7 +177,6 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
       if (activeIframeRef.current) {
         sendTikTokMessage(activeIframeRef.current, isMutedRef.current ? 'mute' : 'unMute');
         sendTikTokMessage(activeIframeRef.current, 'play');
-        setPlayerReady(true);
       }
     };
 
@@ -203,8 +190,8 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
 
     window.addEventListener('message', handleMessage);
 
-    const t1 = window.setTimeout(triggerPlay, 400);
-    const t2 = window.setTimeout(triggerPlay, 1000);
+    const t1 = window.setTimeout(triggerPlay, 500);
+    const t2 = window.setTimeout(triggerPlay, 1200);
 
     return () => {
       window.removeEventListener('message', handleMessage);
@@ -334,7 +321,7 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
               <div className="viewer-slide-card">
                 {/* 1. Area Video */}
                 <div className="viewer-video-box">
-                  {/* Layer Dasar: <CoverImage> selalu ada di bawah (z-index: 1) */}
+                  {/* Layer Dasar: <CoverImage> di bawah (z-index: 1), tanpa play icon ganda */}
                   <CoverImage
                     candidates={candidates}
                     id={item.id}
@@ -342,22 +329,22 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
                     subtitle={item.client}
                     category={item.category}
                     priority={isCurrent}
+                    showPlayIcon={false}
                   />
 
-                  {/* Layer Atas: Player aktif di-mount di atas CoverImage (z-index: 5) */}
+                  {/* Layer Atas: Player aktif langsung tampil & interaktif (z-index: 5) */}
                   {isCurrent && (
                     <>
                       {item.youtubeVideoId ? (
                         <iframe
                           ref={activeIframeRef}
-                          className={playerReady ? 'modal-player-frame is-ready' : 'modal-player-frame'}
+                          className="modal-player-frame is-ready"
                           title={`Video YouTube: ${item.title}`}
                           src={`https://www.youtube-nocookie.com/embed/${item.youtubeVideoId}?autoplay=1&mute=1&playsinline=1&rel=0&enablejsapi=1&loop=1&playlist=${item.youtubeVideoId}`}
                           allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
                           allowFullScreen
                           loading="eager"
                           onLoad={() => {
-                            setPlayerReady(true);
                             sendYouTubeMessage(activeIframeRef.current, isMutedRef.current ? 'mute' : 'unMute');
                             sendYouTubeMessage(activeIframeRef.current, 'playVideo');
                           }}
@@ -365,17 +352,12 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
                       ) : item.tiktokVideoId ? (
                         <iframe
                           ref={activeIframeRef}
-                          className={playerReady ? 'modal-player-frame is-ready' : 'modal-player-frame'}
+                          className="modal-player-frame is-ready"
                           title={`Video TikTok: ${item.title}`}
-                          src={`https://www.tiktok.com/player/v1/${item.tiktokVideoId}?autoplay=1&muted=1&loop=1&controls=1&play_button=1&volume_control=1&music_info=0&description=0&rel=0&native_context_menu=0&closed_caption=0`}
+                          src={`https://www.tiktok.com/player/v1/${item.tiktokVideoId}?autoplay=1&loop=1&controls=1&play_button=1&volume_control=1&music_info=0&description=0&rel=0&native_context_menu=0&closed_caption=0`}
                           allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
                           allowFullScreen
                           loading="eager"
-                          onLoad={() => {
-                            setPlayerReady(true);
-                            sendTikTokMessage(activeIframeRef.current, isMutedRef.current ? 'mute' : 'unMute');
-                            sendTikTokMessage(activeIframeRef.current, 'play');
-                          }}
                         />
                       ) : mp4Source ? (
                         <video
@@ -387,7 +369,6 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
                           autoPlay
                           loop
                           controls
-                          onPlaying={() => setPlayerReady(true)}
                         />
                       ) : null}
                     </>

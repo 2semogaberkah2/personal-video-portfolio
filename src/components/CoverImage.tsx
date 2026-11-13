@@ -10,6 +10,7 @@ export interface CoverImageProps {
   category?: string;
   priority?: boolean;
   objectPosition?: string;
+  showPlayIcon?: boolean;
 }
 
 export function CoverImage({
@@ -20,13 +21,14 @@ export function CoverImage({
   category,
   priority = false,
   objectPosition = 'center',
+  showPlayIcon = false,
 }: CoverImageProps) {
   const [candidateIdx, setCandidateIdx] = useState(0);
   const [isLoaded, setIsLoaded] = useState(false);
 
   const cleanCandidates = candidates
     .map((c) => (c || '').trim())
-    .filter((c) => c && /^https?:\/\//i.test(c) || c.startsWith('/'));
+    .filter((c) => Boolean(c) && (/^https?:\/\//i.test(c) || c.startsWith('/')));
 
   const candidateKey = `${id}::${cleanCandidates.join('|')}`;
 
@@ -49,9 +51,11 @@ export function CoverImage({
           background: `radial-gradient(circle at 18% 18%, rgba(37, 244, 238, 0.16), transparent 55%), radial-gradient(circle at 82% 82%, rgba(255, 43, 85, 0.16), transparent 55%), linear-gradient(145deg, hsl(${hue}, 48%, 14%) 0%, #0d0d0d 65%, hsl(${(hue + 45) % 360}, 40%, 10%) 100%)`,
         }}
       >
-        <span className="cover-placeholder-icon">
-          <Play size={18} fill="currentColor" />
-        </span>
+        {showPlayIcon && (
+          <span className="cover-placeholder-icon">
+            <Play size={18} fill="currentColor" />
+          </span>
+        )}
         <span className="cover-placeholder-title">{title}</span>
         {(subtitle || category) && (
           <small className="cover-placeholder-sub">
