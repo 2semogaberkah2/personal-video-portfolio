@@ -20,12 +20,20 @@ type Props = {
 
 function sendTikTokMessage(iframe: HTMLIFrameElement | null, type: string, value?: unknown) {
   if (!iframe?.contentWindow) return;
-  iframe.contentWindow.postMessage({ 'x-tiktok-player': true, type, value }, '*');
+  try {
+    iframe.contentWindow.postMessage({ 'x-tiktok-player': true, type, value }, '*');
+  } catch {
+    // ignore
+  }
 }
 
 function sendYouTubeMessage(iframe: HTMLIFrameElement | null, func: string) {
   if (!iframe?.contentWindow) return;
-  iframe.contentWindow.postMessage(JSON.stringify({ event: 'command', func, args: [] }), '*');
+  try {
+    iframe.contentWindow.postMessage(JSON.stringify({ event: 'command', func, args: [] }), '*');
+  } catch {
+    // ignore
+  }
 }
 
 export default function VideoModal({ project, projects = [], onClose }: Props) {
@@ -56,10 +64,11 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
   );
   const activeProject = feedProjects[settledIndex] ?? project;
 
-  // goTo hanya memanggil scrollIntoView tanpa mengubah state langsung
   const goTo = useCallback(
     (index: number) => {
       const safeIndex = Math.max(0, Math.min(index, feedProjects.length - 1));
+      setPlayerReady(false);
+      setSettledIndex(safeIndex);
       slideRefs.current[safeIndex]?.scrollIntoView({
         behavior: 'smooth',
         block: 'start',
@@ -116,7 +125,7 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
     });
   }, [project?.id, initialIndex, project]);
 
-  // Observer dengan debounce ~160ms sebagai satu-satunya sumber kebenaran settledIndex
+  // Observer dengan debounce ~150ms saat scroll atas-bawah
   useEffect(() => {
     if (!project || !feedRef.current) return;
 
@@ -150,7 +159,7 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
               }
               return current;
             });
-          }, 160);
+          }, 150);
         }
       },
       {
@@ -176,29 +185,31 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
   useEffect(() => {
     if (!project) return;
 
-    const handleMessage = (event: MessageEvent) => {
-      if (!activeIframeRef.current || event.source !== activeIframeRef.current.contentWindow) return;
-      const data = event.data as { 'x-tiktok-player'?: boolean; type?: string } | null;
-      if (data && data['x-tiktok-player'] && data.type === 'onPlayerReady') {
+    const triggerPlay = () => {
+      if (activeIframeRef.current) {
         sendTikTokMessage(activeIframeRef.current, isMutedRef.current ? 'mute' : 'unMute');
         sendTikTokMessage(activeIframeRef.current, 'play');
         setPlayerReady(true);
       }
     };
 
+    const handleMessage = (event: MessageEvent) => {
+      if (!activeIframeRef.current || event.source !== activeIframeRef.current.contentWindow) return;
+      const data = event.data as { 'x-tiktok-player'?: boolean; type?: string } | null;
+      if (data && data['x-tiktok-player'] && data.type === 'onPlayerReady') {
+        triggerPlay();
+      }
+    };
+
     window.addEventListener('message', handleMessage);
 
-    const fallbackReadyTimer = window.setTimeout(() => {
-      if (activeIframeRef.current) {
-        sendTikTokMessage(activeIframeRef.current, isMutedRef.current ? 'mute' : 'unMute');
-        sendTikTokMessage(activeIframeRef.current, 'play');
-        setPlayerReady(true);
-      }
-    }, 1300);
+    const t1 = window.setTimeout(triggerPlay, 400);
+    const t2 = window.setTimeout(triggerPlay, 1000);
 
     return () => {
       window.removeEventListener('message', handleMessage);
-      window.clearTimeout(fallbackReadyTimer);
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
     };
   }, [settledIndex, project]);
 
@@ -323,7 +334,7 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
               <div className="viewer-slide-card">
                 {/* 1. Area Video */}
                 <div className="viewer-video-box">
-                  {/* Layer Dasar: <CoverImage> selalu ada di bawah */}
+                  {/* Layer Dasar: <CoverImage> selalu ada di bawah (z-index: 1) */}
                   <CoverImage
                     candidates={candidates}
                     id={item.id}
@@ -333,7 +344,7 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
                     priority={isCurrent}
                   />
 
-                  {/* Layer Atas: Player aktif HANYA di-mount untuk index === settledIndex */}
+                  {/* Layer Atas: Player aktif di-mount di atas CoverImage (z-index: 5) */}
                   {isCurrent && (
                     <>
                       {item.youtubeVideoId ? (
@@ -346,9 +357,9 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
                           allowFullScreen
                           loading="eager"
                           onLoad={() => {
+                            setPlayerReady(true);
                             sendYouTubeMessage(activeIframeRef.current, isMutedRef.current ? 'mute' : 'unMute');
                             sendYouTubeMessage(activeIframeRef.current, 'playVideo');
-                            setPlayerReady(true);
                           }}
                         />
                       ) : item.tiktokVideoId ? (
@@ -356,10 +367,15 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
                           ref={activeIframeRef}
                           className={playerReady ? 'modal-player-frame is-ready' : 'modal-player-frame'}
                           title={`Video TikTok: ${item.title}`}
-                          src={`https://www.tiktok.com/player/v1/${item.tiktokVideoId}?autoplay=1&loop=1&music_info=0&description=0&rel=0&native_context_menu=0&closed_caption=0`}
+                          src={`https://www.tiktok.com/player/v1/${item.tiktokVideoId}?autoplay=1&muted=1&loop=1&controls=1&play_button=1&volume_control=1&music_info=0&description=0&rel=0&native_context_menu=0&closed_caption=0`}
                           allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
                           allowFullScreen
                           loading="eager"
+                          onLoad={() => {
+                            setPlayerReady(true);
+                            sendTikTokMessage(activeIframeRef.current, isMutedRef.current ? 'mute' : 'unMute');
+                            sendTikTokMessage(activeIframeRef.current, 'play');
+                          }}
                         />
                       ) : mp4Source ? (
                         <video
@@ -378,46 +394,59 @@ export default function VideoModal({ project, projects = [], onClose }: Props) {
                   )}
                 </div>
 
-                {/* 2. Area Teks & Keterangan Rapi di Samping */}
-                <div className="viewer-info-panel">
-                  <div className="viewer-info-meta-top">
-                    <span className="viewer-kicker">
-                      {item.category} · {item.aspectRatio}
-                    </span>
-                    <span className="viewer-order-badge">#{String(index + 1).padStart(2, '0')}</span>
-                  </div>
-
-                  <h2 className="viewer-title">{item.title}</h2>
-                  {item.client && <p className="viewer-client">Klien: {item.client}</p>}
-
-                  {item.description && <p className="viewer-description">{item.description}</p>}
-
-                  {item.role && (
-                    <div className="viewer-role">
-                      <strong>PERAN / SOFTWARE</strong>
-                      <p>{item.role}</p>
+                {/* 2. Area Teks & Keterangan Rapi di Samping / Bawah */}
+                <div className="viewer-info-box">
+                  <div>
+                    <div className="viewer-info-meta-top">
+                      <span className="viewer-kicker">
+                        {item.category} · {item.aspectRatio}
+                      </span>
+                      <span className="viewer-order-badge">#{String(index + 1).padStart(2, '0')}</span>
                     </div>
-                  )}
+
+                    <h2 className="viewer-title">{item.title}</h2>
+                    {item.client && <p className="viewer-client">Klien: {item.client}</p>}
+
+                    {item.description && <p className="viewer-description">{item.description}</p>}
+
+                    {item.role && (
+                      <div className="viewer-role">
+                        <strong>PERAN / SOFTWARE</strong>
+                        <p>{item.role}</p>
+                      </div>
+                    )}
+                  </div>
 
                   <div className="viewer-info-actions">
                     <button
                       type="button"
-                      className="viewer-contact-btn"
+                      className="viewer-contact-cta"
                       onClick={handleGoToContact}
                     >
                       KONSULTASI PROJECT INI <ArrowDown size={15} />
                     </button>
 
-                    {item.fullVideo && (
-                      <a
-                        href={item.fullVideo}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="viewer-original-link"
+                    <div className="viewer-secondary-actions">
+                      <button
+                        type="button"
+                        className="viewer-mute-btn"
+                        onClick={toggleMute}
                       >
-                        LIHAT VIDEO ASLI <ArrowUpRight size={14} />
-                      </a>
-                    )}
+                        {isMuted ? <VolumeX size={14} /> : <Volume2 size={14} />}
+                        <span>{isMuted ? 'UNMUTE AUDIO' : 'MUTE AUDIO'}</span>
+                      </button>
+
+                      {(item.externalUrl || item.fullVideo) && (
+                        <a
+                          href={item.externalUrl || item.fullVideo}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="viewer-original-link"
+                        >
+                          LIHAT VIDEO ASLI <ArrowUpRight size={14} />
+                        </a>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>

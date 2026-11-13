@@ -5,9 +5,9 @@
 .video-frame{width:100%;position:relative;overflow:hidden;background:#121212;isolation:isolate;border:1px solid #1f1f1f}
 .video-poster,.video-preview{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transition:opacity .24s ease,transform .45s ease}
 .video-poster{z-index:1}
-.video-poster-live{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:2;opacity:0;transition:opacity .2s ease;pointer-events:none}
+.video-poster-live{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:4;opacity:0;transition:opacity .2s ease;pointer-events:none}
 .video-poster-live.is-ready{opacity:1}
-.video-tiktok-embed{position:absolute;inset:0;z-index:2;display:block;width:100%;height:100%;border:0;background:#000;opacity:0;transition:opacity .2s ease;pointer-events:none}
+.video-tiktok-embed{position:absolute;inset:0;z-index:4;display:block;width:100%;height:100%;border:0;background:#000;opacity:0;transition:opacity .2s ease;pointer-events:none}
 .video-tiktok-embed.is-ready{opacity:1}
 .video-card-fallback{position:absolute;inset:0;width:100%;height:100%;display:block;text-align:left;background:#111;border:0;padding:0;cursor:pointer;overflow:hidden}
 .video-card-fallback .video-poster{z-index:1}
@@ -351,20 +351,28 @@
 .viewer-video-box iframe,
 .viewer-video-box video,
 .viewer-inactive-poster {
+  position: relative;
+  z-index: 5;
   display: block;
   width: 100%;
   height: 100%;
   border: 0;
   object-fit: contain;
+  background: transparent;
+}
+
+.viewer-video-box .modal-player-frame {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  transition: opacity 0.2s ease;
   background: #000;
 }
 
-.viewer-video-box iframe.modal-player-frame {
-  opacity: 0;
-  transition: opacity 0.2s ease;
-}
-
-.viewer-video-box iframe.modal-player-frame.is-ready {
+.viewer-video-box .modal-player-frame.is-ready {
   opacity: 1;
 }
 

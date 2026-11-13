@@ -47,7 +47,6 @@ export function VideoItem({
   onOpen,
   index,
 }: VideoItemProps) {
-  const [touchDevice, setTouchDevice] = useState(false);
   const [isMobileViewport, setIsMobileViewport] = useState(false);
   const [isMuted, setIsMuted] = useState(true);
   const [mountLive, setMountLive] = useState(false);
@@ -73,7 +72,7 @@ export function VideoItem({
     'controls=0&progress_bar=0&play_button=0&volume_control=0&fullscreen_button=0&timestamp=0&music_info=0&description=0&loop=1&rel=0&native_context_menu=0&closed_caption=0';
 
   const tiktokHoverEmbed = project.tiktokVideoId
-    ? `https://www.tiktok.com/player/v1/${project.tiktokVideoId}?autoplay=1&${cleanTikTokParams}`
+    ? `https://www.tiktok.com/player/v1/${project.tiktokVideoId}?autoplay=1&muted=1&${cleanTikTokParams}`
     : null;
 
   const youtubeHoverEmbed = project.youtubeVideoId
@@ -81,7 +80,8 @@ export function VideoItem({
     : null;
 
   const isActive = activePreview === project.id;
-  const canLive = !touchDevice && !isMobileViewport && isActive && (isMp4 || isTikTok || isYouTube);
+  // Di laptop (>600px), izinkan live hover preview baik dengan mouse maupun laptop touchscreen
+  const canLive = !isMobileViewport && isActive && (isMp4 || isTikTok || isYouTube);
 
   const candidates = useMemo(() => {
     return buildCoverCandidates({
@@ -104,25 +104,20 @@ export function VideoItem({
   }, [isMuted]);
 
   useEffect(() => {
-    const hoverQuery = window.matchMedia('(hover: hover) and (pointer: fine)');
     const mobileQuery = window.matchMedia('(max-width: 600px)');
 
     const updateDevice = () => {
-      setTouchDevice(!hoverQuery.matches);
       setIsMobileViewport(mobileQuery.matches);
     };
     updateDevice();
 
-    hoverQuery.addEventListener('change', updateDevice);
     mobileQuery.addEventListener('change', updateDevice);
-
     return () => {
-      hoverQuery.removeEventListener('change', updateDevice);
       mobileQuery.removeEventListener('change', updateDevice);
     };
   }, []);
 
-  // Hover-intent delay 250ms sebelum me-mount layer live desktop
+  // Hover-intent singkat (120ms) sebelum me-mount layer live desktop
   useEffect(() => {
     if (!canLive) {
       setMountLive(false);
@@ -132,38 +127,40 @@ export function VideoItem({
 
     const timer = window.setTimeout(() => {
       setMountLive(true);
-    }, 250);
+    }, 120);
 
     return () => {
       window.clearTimeout(timer);
     };
   }, [canLive]);
 
-  // Handler TikTok message listener saat live layer desktop aktif
+  // Handler TikTok message & command trigger saat live layer desktop aktif
   useEffect(() => {
     if (!mountLive || !isTikTok) return;
+
+    const triggerPlayback = () => {
+      sendTikTokCommand(iframeRef.current, isMutedRef.current ? 'mute' : 'unMute');
+      sendTikTokCommand(iframeRef.current, 'play');
+      setLiveReady(true);
+    };
 
     const handleMessage = (event: MessageEvent) => {
       if (!iframeRef.current || event.source !== iframeRef.current.contentWindow) return;
       const data = event.data as { 'x-tiktok-player'?: boolean; type?: string } | null;
       if (data && data['x-tiktok-player'] && data.type === 'onPlayerReady') {
-        sendTikTokCommand(iframeRef.current, isMutedRef.current ? 'mute' : 'unMute');
-        sendTikTokCommand(iframeRef.current, 'play');
-        setLiveReady(true);
+        triggerPlayback();
       }
     };
 
     window.addEventListener('message', handleMessage);
 
-    const fallbackTimer = window.setTimeout(() => {
-      sendTikTokCommand(iframeRef.current, isMutedRef.current ? 'mute' : 'unMute');
-      sendTikTokCommand(iframeRef.current, 'play');
-      setLiveReady(true);
-    }, 1200);
+    const t1 = window.setTimeout(triggerPlayback, 350);
+    const t2 = window.setTimeout(triggerPlayback, 900);
 
     return () => {
       window.removeEventListener('message', handleMessage);
-      window.clearTimeout(fallbackTimer);
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
     };
   }, [mountLive, isTikTok]);
 
@@ -185,23 +182,22 @@ export function VideoItem({
     <article
       className="video-item-card"
       onMouseEnter={() => {
-        if (!touchDevice && !isMobileViewport) {
+        if (!isMobileViewport) {
           onPreview(project.id);
         }
       }}
       onMouseLeave={() => {
-        if (!touchDevice && !isMobileViewport && isActive) {
+        if (!isMobileViewport && isActive) {
           onPreview(null);
         }
       }}
       onFocus={() => {
-        if (!touchDevice && !isMobileViewport) {
+        if (!isMobileViewport) {
           onPreview(project.id);
         }
       }}
       onBlur={(event) => {
         if (
-          !touchDevice &&
           !isMobileViewport &&
           isActive &&
           !event.currentTarget.contains(event.relatedTarget as Node | null)
@@ -224,7 +220,7 @@ export function VideoItem({
           }}
           aria-label={`Buka video ${project.title}`}
         >
-          {/* Layer 1 (Dasar): Cover Gambar Murni (Tidak pernah live iframe di touch/mobile) */}
+          {/* Layer 1 (Dasar): Cover Gambar Murni (Tidak pernah live iframe di mobile) */}
           <CoverImage
             candidates={candidates}
             id={project.id}
@@ -235,7 +231,7 @@ export function VideoItem({
             objectPosition={project.posterPosition ?? 'center'}
           />
 
-          {/* Layer 2: Live Player Desktop (Mount hanya setelah hover-intent 250ms pada pointer/mouse) */}
+          {/* Layer 2: Live Player Desktop (Mount saat di-hover di laptop) */}
           {mountLive && (
             <>
               {isMp4 && previewUrl && (
@@ -248,6 +244,7 @@ export function VideoItem({
                   playsInline
                   autoPlay
                   preload="auto"
+                  onLoadedData={() => setLiveReady(true)}
                   onPlaying={() => setLiveReady(true)}
                   style={{
                     position: 'absolute',
@@ -256,7 +253,7 @@ export function VideoItem({
                     height: '100%',
                     objectFit: 'cover',
                     pointerEvents: 'none',
-                    zIndex: 2,
+                    zIndex: 4,
                   }}
                 />
               )}
@@ -267,9 +264,14 @@ export function VideoItem({
                   className={liveReady ? 'video-tiktok-embed is-ready' : 'video-tiktok-embed'}
                   title={`Preview TikTok: ${project.title}`}
                   src={tiktokHoverEmbed}
-                  allow="autoplay; encrypted-media"
+                  allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
                   referrerPolicy="strict-origin-when-cross-origin"
                   tabIndex={-1}
+                  onLoad={() => {
+                    setLiveReady(true);
+                    sendTikTokCommand(iframeRef.current, isMutedRef.current ? 'mute' : 'unMute');
+                    sendTikTokCommand(iframeRef.current, 'play');
+                  }}
                   style={{
                     position: 'absolute',
                     inset: 0,
@@ -277,7 +279,7 @@ export function VideoItem({
                     height: '100%',
                     border: 0,
                     pointerEvents: 'none',
-                    zIndex: 2,
+                    zIndex: 4,
                   }}
                 />
               )}
@@ -288,13 +290,13 @@ export function VideoItem({
                   className={liveReady ? 'video-tiktok-embed is-ready' : 'video-tiktok-embed'}
                   title={`Preview YouTube: ${project.title}`}
                   src={youtubeHoverEmbed}
-                  allow="autoplay; encrypted-media"
+                  allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
                   referrerPolicy="strict-origin-when-cross-origin"
                   tabIndex={-1}
                   onLoad={() => {
+                    setLiveReady(true);
                     sendYouTubeCommand(iframeRef.current, isMutedRef.current ? 'mute' : 'unMute');
                     sendYouTubeCommand(iframeRef.current, 'playVideo');
-                    setLiveReady(true);
                   }}
                   style={{
                     position: 'absolute',
@@ -303,7 +305,7 @@ export function VideoItem({
                     height: '100%',
                     border: 0,
                     pointerEvents: 'none',
-                    zIndex: 2,
+                    zIndex: 4,
                   }}
                 />
               )}
@@ -311,7 +313,7 @@ export function VideoItem({
           )}
 
           {/* Tombol Mute/Unmute Desktop */}
-          {!isMobileViewport && !touchDevice && isActive && (
+          {!isMobileViewport && isActive && (
             <button
               type="button"
               className="video-volume-toggle"
